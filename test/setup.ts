@@ -1,10 +1,12 @@
-// Bun test preload — alias `obsidian` (and `electron`) to obsidian-sim's
-// mock so source-level ESM imports (`import { Plugin } from 'obsidian'`) get
-// the mock at `bun test` time. installObsidianHook covers CJS require() in
-// built bundles only; ESM imports go through Bun's loader.
+// vitest setup — alias `obsidian` to obsidian-sim's shape-only mock so
+// source-level ESM imports (`import { Plugin } from 'obsidian'`) resolve
+// at test time. vi.mock is hoisted to the top of the file by vitest's
+// transformer, so the factory cannot reference any top-level variables —
+// the import must happen INSIDE the factory function.
 
-import { mock } from 'bun:test';
-import * as obsidianMock from 'obsidian-sim/mock';
+import { vi } from 'vitest';
 
-mock.module('obsidian', () => obsidianMock);
-mock.module('electron', () => ({}));
+vi.mock('obsidian', async () => {
+  const mock = await import('obsidian-sim/mock');
+  return mock;
+});
