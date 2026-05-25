@@ -4,25 +4,30 @@
   "description": "Modular plugin for Obsidian — diagram ↔ vault md sync.",
   "main": "main.js",
   "type": "module",
+  "packageManager": "pnpm@9.0.0",
   "scripts": {
     "build": "opk build",
     "dev": "opk dev",
     "smoke": "opk smoke",
     "verify": "opk build && opk smoke",
     "typecheck": "tsc --noEmit",
-    "test": "bun test",
+    "test": "vitest run",
+    "lint": "eslint src/",
     "reload": "opk reload",
     "attach": "opk attach"
   },
   "devDependencies": {
-    "@types/bun": "latest",
     "@types/node": "^22.0.0",
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",
+    "eslint": "^9.39.4",
+    "eslint-plugin-obsidianmd": "^0.3.0",
     "obsidian": "^1.7.2",
-    "obsidian-sim": "link:obsidian-sim",
-    "obsidian-plugin-kit": "link:obsidian-plugin-kit",
-    "typescript": "^5.6.0"
+    "obsidian-plugin-kit": "link:../kit/packages/opk",
+    "obsidian-sim": "link:../kit/packages/sim",
+    "typescript": "^6.0.0",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^3.0.0"
   },
   "dependencies": {
     "react": "^18.3.1",

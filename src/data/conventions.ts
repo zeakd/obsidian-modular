@@ -11,7 +11,8 @@
 //   modular/.../.ai/...     → 무시 (AI 영역)
 
 export const MODULAR_FOLDER = 'modular';
-export const POSITIONS_PATH = 'modular/.positions.json';
+/** 옛 단일 파일. 첫 부팅 시 entity 별 dotfile 로 분배 후 삭제. */
+export const LEGACY_POSITIONS_PATH = 'modular/.positions.json';
 export const AI_FOLDER = '.ai';
 
 export function isModularPath(path: string): boolean {
@@ -99,6 +100,20 @@ export function newChildComponentPaths(parentFolderPath: string, name: string): 
   if (!safe) return null;
   const folder = `${parentFolderPath}/${safe}`;
   return { folder, md: `${folder}/${safe}.md` };
+}
+
+/** entity 의 좌표 sidecar dotfile 경로.
+ *  - expanded entity 는 폴더 안의 `.position` (folder-scoped dotfile)
+ *  - leaf entity 는 sibling 의 `.<basename>.position`
+ *  둘 다 dotfile 이라 Obsidian explorer 의 기본 표시에서 hidden. */
+export function positionSidecarPath(info: EntityInfo, entityPath: string): string {
+  if (info.expanded) {
+    return `${info.folderPath}/.position`;
+  }
+  const slashIdx = entityPath.lastIndexOf('/');
+  const dir = entityPath.slice(0, slashIdx);
+  const base = entityPath.slice(slashIdx + 1).replace(/\.md$/, '');
+  return `${dir}/.${base}.position`;
 }
 
 /** leaf entity 가 expanded 로 promote 될 때의 새 path. */
