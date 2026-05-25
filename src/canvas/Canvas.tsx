@@ -385,7 +385,54 @@ function CanvasInner({ store }: CanvasProps) {
     setEditingId(node.id);
   }, []);
 
-  const onPaneClick = useCallback(() => setSelectedId(null), []);
+  // 노드 클릭 = 선택 + side leaf 에서 그 md 자동 열기.
+  // sideLeaf 가 살아 있으면 같은 leaf 의 파일만 교체, 죽었으면 새 split.
+  // path 가 같은 노드를 다시 클릭하면 reopen 안 함 (불필요한 reload 방지).
+  const lastOpenedRef = useRef<string | null>(null);
+  const onNodeClick: NodeMouseHandler = useCallback((_, node) => {
+    if (node.id === PENDING_ID) return;
+    setSelectedId(node.id);
+    if (lastOpenedRef.current === node.id) return;
+    lastOpenedRef.current = node.id;
+    void store.openInSideLeaf(node.id);
+  }, [store]);
+
+  // 우클릭 컨텍스트 메뉴 — Obsidian Menu 사용. 메뉴 항목은 store 가 정의,
+  // plugin 측 동작 (이름 편집 / 자식 추가 / 삭제) 은 callback 으로.
+  const onNodeContextMenu: NodeMouseHandler = useCallback((e, node) => {
+    if (node.id === PENDING_ID) return;
+    e.preventDefault();
+    setSelectedId(node.id);
+    store.showNodeMenu(e as unknown as MouseEvent, node.id, {
+      onRename: (path) => setEditingId(path),
+      onAddChild: (path) => {
+        // 선택된 entity 의 자식 component pending — Tab 과 같은 동선
+        const parentModule = w.modules.find((m) => m.path === path);
+        const parentComp = w.components.find((c) => c.path === path);
+        const parent = parentModule ?? parentComp;
+        if (!parent) return;
+        const siblings = w.components.filter((c) => c.parentPath === path);
+        const x = parent.position.x + MODULE_W_EST + COMPONENT_GAP_X;
+        const y = parent.position.y + siblings.length * COMPONENT_GAP_Y;
+        setPending({ kind: 'component', parentPath: path, position: { x, y } });
+        setSelectedId(PENDING_ID);
+      },
+      onDelete: (path) => {
+        const hasChildren = w.components.some((c) => c.parentPath === path);
+        if (hasChildren) {
+          const ok = confirm(`'${path}' 와 모든 자식을 삭제할까요? (폴더 통째로 사라집니다)`);
+          if (!ok) return;
+        }
+        void store.deleteEntity(path);
+        if (selectedId === path) setSelectedId(null);
+      },
+    });
+  }, [store, w.modules, w.components, selectedId]);
+
+  const onPaneClick = useCallback(() => {
+    setSelectedId(null);
+    lastOpenedRef.current = null;
+  }, []);
 
   // delete + Esc + ⌘Enter
   useEffect(() => {
@@ -419,8 +466,13 @@ function CanvasInner({ store }: CanvasProps) {
         setEditingId(null);
         setSelectedId(null);
       }
+      // ⌘+Enter — 선택된 노드의 md 를 *새 split* 에서 열기 (sideLeaf 재사용 X).
+      // 일반 클릭은 sideLeaf 재사용이라 빠른 전환, ⌘+Enter 는 비교용 별도 창.
       if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-        if (selectedId && selectedId !== PENDING_ID) void store.openInSplitLeaf(selectedId);
+        if (selectedId && selectedId !== PENDING_ID) {
+          e.preventDefault();
+          void store.openInNewSplit(selectedId);
+        }
       }
     };
     document.addEventListener('keydown', onKey);
@@ -436,7 +488,9 @@ function CanvasInner({ store }: CanvasProps) {
         edgeTypes={edgeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
+        onNodeClick={onNodeClick}
         onNodeDoubleClick={onNodeDoubleClick}
+        onNodeContextMenu={onNodeContextMenu}
         onPaneClick={onPaneClick}
         onConnect={onConnect}
         onNodeDragStart={onNodeDragStart}

@@ -1,18 +1,24 @@
-/* modular plugin — 전역 누출 방지. 모든 변수는 .modular-canvas scope 안. */
+/* modular plugin — 전역 누출 방지. 모든 변수는 .modular-canvas scope 안.
+   Obsidian native CSS 변수를 alias 해서 vault 의 light/dark theme 자동 따라감.
+   marker 색 (module/component) 만 lightness 둘 다에서 적절한 톤으로 hardcoded. */
 
 .modular-canvas {
-  /* 색 */
-  --m-bg: #fafaf8;
-  --m-ink: #1d1d1f;
-  --m-ink-soft: #6e6e73;
-  --m-ink-faint: #a1a1a6;
-  --m-hair: rgba(0, 0, 0, 0.08);
-  --m-hair-soft: rgba(0, 0, 0, 0.04);
-  --m-accent: #3b82f6;
+  /* Obsidian native 변수 alias — theme 자동 따라감 */
+  --m-bg: var(--background-primary);
+  --m-card-bg: var(--background-primary);
+  --m-ink: var(--text-normal);
+  --m-ink-soft: var(--text-muted);
+  --m-ink-faint: var(--text-faint);
+  --m-hair: var(--background-modifier-border);
+  --m-hair-hover: var(--background-modifier-border-hover, var(--background-modifier-border));
+  --m-hair-soft: var(--background-modifier-border-hover, rgba(127, 127, 127, 0.1));
+  --m-accent: var(--interactive-accent);
 
+  /* lightness 양쪽 모두 보이는 톤 — module 푸른빛, component 보랏빛 */
   --m-module-marker: #5b8def;
   --m-component-marker: #7c6df0;
-  --m-task-edge: rgba(0, 0, 0, 0.32);
+  /* task edge — dark 에서도 안 사라지게 */
+  --m-task-edge: var(--text-muted);
 
   --m-font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
   --m-font-mono: "SF Mono", ui-monospace, Menlo, monospace;
@@ -25,8 +31,6 @@
 }
 
 .modular-canvas, .modular-canvas * { box-sizing: border-box; }
-
-/* Obsidian dark theme 에서도 카드는 자체 색 유지 (1단계 — 다크 대응은 추후). */
 
 /* ─── Canvas root ───────────────────────────────────────────── */
 
@@ -72,7 +76,7 @@
   width: 10px !important;
   height: 10px !important;
   background: var(--m-accent) !important;
-  border: 2px solid white !important;
+  border: 2px solid var(--m-card-bg) !important;
   opacity: 0;
   transition: opacity 140ms ease;
   border-radius: 50% !important;
@@ -83,7 +87,7 @@
 .modular-canvas .react-flow__node-component:hover .react-flow__handle { opacity: 0.55; }
 .modular-canvas .react-flow__node-component:hover .react-flow__handle:hover {
   opacity: 1;
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
+  box-shadow: 0 0 0 3px rgba(var(--interactive-accent-rgb), 0.25);
 }
 .modular-canvas .react-flow__node-module:hover .react-flow__handle { opacity: 0.18; }
 
@@ -111,7 +115,7 @@
   align-items: stretch;
   min-width: 200px;
   max-width: 360px;
-  background: white;
+  background: var(--m-card-bg);
   border: 1px solid var(--m-hair);
   border-radius: var(--m-module-radius);
   box-shadow:
@@ -123,15 +127,15 @@
   will-change: transform;
   overflow: hidden;
 }
-.modular-canvas .mn:hover { border-color: rgba(0, 0, 0, 0.18); }
+.modular-canvas .mn:hover { border-color: var(--m-hair-hover); }
 .modular-canvas .mn:active { cursor: grabbing; }
 .modular-canvas .mn-selected {
   border-color: var(--m-accent);
   border-width: 1.5px;
   box-shadow:
     0 1px 2px rgba(0, 0, 0, 0.04),
-    0 6px 16px rgba(59, 130, 246, 0.14),
-    0 0 0 1px rgba(59, 130, 246, 0.28);
+    0 6px 16px rgba(var(--interactive-accent-rgb), 0.14),
+    0 0 0 1px rgba(var(--interactive-accent-rgb), 0.28);
 }
 .modular-canvas .mn-stripe {
   flex: 0 0 4px;
@@ -197,8 +201,8 @@
   max-width: 220px;
   min-height: var(--m-component-min-h);
   padding: 5px 12px;
-  background: white;
-  border: 1px solid rgba(0, 0, 0, 0.18);
+  background: var(--m-card-bg);
+  border: 1px solid var(--m-hair);
   border-radius: var(--m-component-radius);
   font-size: 13px;
   font-weight: 500;
@@ -221,15 +225,15 @@
   background: var(--m-component-marker);
   border-radius: 2px;
 }
-.modular-canvas .cn:hover { border-color: rgba(0, 0, 0, 0.35); }
+.modular-canvas .cn:hover { border-color: var(--m-hair-hover); }
 .modular-canvas .cn:active { cursor: grabbing; }
 .modular-canvas .cn-selected {
   border-color: var(--m-accent);
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.14);
+  box-shadow: 0 0 0 2px rgba(var(--interactive-accent-rgb), 0.14);
 }
 .modular-canvas .cn-editing {
   border-color: var(--m-accent);
-  background: white;
+  background: var(--m-card-bg);
   cursor: text;
 }
 .modular-canvas .cn-name {
@@ -269,9 +273,9 @@
 
 /* editing 상태 카드의 외곽 강조는 카드 자체 border 로만 — textarea 가 별도 outline 없게. */
 .modular-canvas .mn-editing { border-color: var(--m-accent); }
-.modular-canvas .mn-editing.mn-selected { box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.28); }
-.modular-canvas .cn-editing { border-color: var(--m-accent); background: white; }
-.modular-canvas .cn-editing.cn-selected { box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.28); }
+.modular-canvas .mn-editing.mn-selected { box-shadow: 0 0 0 1px rgba(var(--interactive-accent-rgb), 0.28); }
+.modular-canvas .cn-editing { border-color: var(--m-accent); background: var(--m-card-bg); }
+.modular-canvas .cn-editing.cn-selected { box-shadow: 0 0 0 1px rgba(var(--interactive-accent-rgb), 0.28); }
 
 /* ─── Empty State ──────────────────────────────────────────── */
 
@@ -301,7 +305,7 @@
 .modular-canvas .cv-empty-hint kbd {
   font-family: var(--m-font-mono);
   font-size: 10.5px;
-  background: white;
+  background: var(--m-card-bg);
   border: 1px solid var(--m-hair);
   border-radius: 4px;
   padding: 1px 5px;
@@ -329,7 +333,7 @@
 .modular-canvas .cv-status kbd {
   font-family: var(--m-font-mono);
   font-size: 10.5px;
-  background: white;
+  background: var(--m-card-bg);
   border: 1px solid var(--m-hair);
   border-radius: 4px;
   padding: 1px 5px;
