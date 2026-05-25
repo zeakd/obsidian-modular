@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "build": "opk build",
-    "dev": "opk build --watch",
+    "dev": "opk dev",
     "smoke": "opk smoke",
     "verify": "opk build && opk smoke",
     "typecheck": "tsc --noEmit",
@@ -21,7 +21,7 @@
     "@types/react-dom": "^18.3.0",
     "obsidian": "^1.7.2",
     "obsidian-sim": "link:obsidian-sim",
-    "opk": "link:opk",
+    "obsidian-plugin-kit": "link:obsidian-plugin-kit",
     "typescript": "^5.6.0"
   },
   "dependencies": {

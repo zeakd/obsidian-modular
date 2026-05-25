@@ -2,7 +2,7 @@
 // vault root so a remote AI can see where load broke without DevTools.
 
 import { Plugin, Notice, WorkspaceLeaf } from 'obsidian';
-import { VaultDebugLog } from 'opk/runtime';
+import { VaultDebugLog } from 'obsidian-plugin-kit/runtime';
 import { ModularView, VIEW_TYPE_MODULAR } from './view/ModularView';
 import { VaultStore } from './data/vault-store';
 
