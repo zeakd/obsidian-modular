@@ -3,20 +3,25 @@
   "version": "0.1.0",
   "description": "Modular plugin for Obsidian — diagram ↔ vault md sync.",
   "main": "main.js",
+  "type": "module",
   "scripts": {
-    "build": "bun run build.ts",
-    "dev": "bun --watch build.ts -- --watch",
+    "build": "opk build",
+    "dev": "opk build --watch",
+    "smoke": "opk smoke",
+    "verify": "opk build && opk smoke",
     "typecheck": "tsc --noEmit",
-    "smoke": "bun run test/smoke.ts",
-    "verify": "bun run build && bun run smoke"
+    "test": "bun test",
+    "reload": "opk reload",
+    "attach": "opk attach"
   },
   "devDependencies": {
     "@types/bun": "latest",
     "@types/node": "^22.0.0",
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",
-    "happy-dom": "^20.9.0",
     "obsidian": "^1.7.2",
+    "obsidian-sim": "link:obsidian-sim",
+    "opk": "link:opk",
     "typescript": "^5.6.0"
   },
   "dependencies": {
