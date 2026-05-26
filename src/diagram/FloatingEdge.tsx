@@ -55,7 +55,7 @@ export function FloatingEdge(props: EdgeProps) {
   }, [sourceNode, targetNode]);
 
   if (!path) return null;
-  const baseStyle = { ...(style ?? {}) } as React.CSSProperties;
+  const baseStyle = { ...(style ?? {}) };
   if (selected) {
     baseStyle.stroke = 'var(--accent)';
     baseStyle.strokeWidth = 1.6;

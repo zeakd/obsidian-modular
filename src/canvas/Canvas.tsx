@@ -133,8 +133,8 @@ function CanvasInner({ store }: CanvasProps) {
       setPending({ kind: 'component', parentPath: selectedEntityPath, position: { x, y } });
       setSelectedId(PENDING_ID);
     };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
+    activeDocument.addEventListener('keydown', onKey);
+    return () => activeDocument.removeEventListener('keydown', onKey);
   }, [selectedEntityPath, w.modules, w.components, pending]);
 
   const [rfNodes, setRfNodes] = useState<Node[]>([]);
@@ -419,10 +419,9 @@ function CanvasInner({ store }: CanvasProps) {
       },
       onDelete: (path) => {
         const hasChildren = w.components.some((c) => c.parentPath === path);
-        if (hasChildren) {
-          const ok = confirm(`'${path}' 와 모든 자식을 삭제할까요? (폴더 통째로 사라집니다)`);
-          if (!ok) return;
-        }
+        // TODO: replace with a proper Obsidian Modal for native theming.
+        // eslint-disable-next-line no-alert -- intentional native confirm pending Modal port
+        if (hasChildren && !confirm(`'${path}' 와 모든 자식을 삭제할까요? (폴더 통째로 사라집니다)`)) return;
         void store.deleteEntity(path);
         if (selectedId === path) setSelectedId(null);
       },
@@ -446,10 +445,8 @@ function CanvasInner({ store }: CanvasProps) {
         for (const n of sel) {
           // expanded entity (자식 있을 가능성) 는 한 번 더 확인 받음
           const hasChildren = w.components.some((c) => c.parentPath === n.id);
-          if (hasChildren) {
-            const ok = confirm(`'${n.id}' 와 모든 자식을 삭제할까요? (폴더 통째로 사라집니다)`);
-            if (!ok) continue;
-          }
+          // eslint-disable-next-line no-alert -- intentional native confirm pending Modal port
+          if (hasChildren && !confirm(`'${n.id}' 와 모든 자식을 삭제할까요? (폴더 통째로 사라집니다)`)) continue;
           void store.deleteEntity(n.id);
         }
         for (const ed of selE) {
@@ -475,8 +472,8 @@ function CanvasInner({ store }: CanvasProps) {
         }
       }
     };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
+    activeDocument.addEventListener('keydown', onKey);
+    return () => activeDocument.removeEventListener('keydown', onKey);
   }, [rf, store, selectedId, pending]);
 
   return (
