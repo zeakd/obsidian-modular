@@ -340,3 +340,14 @@
   margin: 0 2px;
   color: var(--m-ink-soft);
 }
+
+/* ── ItemView container — replaces inline style.padding/position/overflow ── */
+.modular-view-container {
+  padding: 0;
+  position: relative;
+  overflow: hidden;
+}
+.modular-view-mount {
+  position: absolute;
+  inset: 0;
+}

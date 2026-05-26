@@ -26,21 +26,25 @@ export function ComponentNode({ data, selected }: NodeProps<ComponentNodeData>) 
       const el = taRef.current;
       if (!el || !el.isConnected) return;
       el.focus({ preventScroll: true });
-      if (document.activeElement === el) {
+      if (activeDocument.activeElement === el) {
         el.select();
         return;
       }
-      if (tries++ < 8) setTimeout(attempt, 30);
+      if (tries++ < 8) window.setTimeout(attempt, 30);
     };
-    const t = setTimeout(attempt, 30);
-    return () => { cancelled = true; clearTimeout(t); };
+    const t = window.setTimeout(attempt, 30);
+    return () => { cancelled = true; window.clearTimeout(t); };
   }, [editing]);
 
   useLayoutEffect(() => {
     if (!editing || !taRef.current) return;
     const el = taRef.current;
+    // Dynamic auto-resize: must read scrollHeight after reset, so values are
+    // computed per-render and CSS classes can't replace this.
+    /* eslint-disable obsidianmd/no-static-styles-assignment -- dynamic textarea auto-resize */
     el.style.height = 'auto';
     el.style.height = el.scrollHeight + 'px';
+    /* eslint-enable obsidianmd/no-static-styles-assignment */
   }, [value, editing]);
 
   const commit = () => onCommitName(value);

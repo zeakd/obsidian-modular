@@ -27,29 +27,22 @@ export default class ModularPlugin extends Plugin {
       );
 
       await this.log.write('registering command');
+      // Plugin id/name are prepended automatically — bare id/name avoids
+      // "Modular: Modular canvas" duplication in the UI.
       this.addCommand({
-        id: 'open-modular-canvas',
-        name: 'Open Modular canvas',
-        callback: () => this.activateView(),
+        id: 'open-canvas',
+        name: 'Open canvas',
+        callback: () => { void this.activateView(); },
       });
 
       await this.log.write('registering ribbon icon');
-      this.addRibbonIcon('git-fork', 'Modular canvas', () => this.activateView());
+      this.addRibbonIcon('git-fork', 'Modular canvas', () => { void this.activateView(); });
 
       // Diagnostic: dump the debug log to DevTools console on demand.
       this.addCommand({
-        id: 'modular-show-debug-log',
-        name: 'Modular: show debug log',
-        callback: async () => {
-          try {
-            const text = await this.log.read();
-            if (text == null) { new Notice('debug log not found'); return; }
-            console.log('[modular] ─── debug log ───\n' + text);
-            new Notice('debug log printed to DevTools console (⌘⌥I)');
-          } catch (e) {
-            new Notice(`debug log read failed: ${e}`);
-          }
-        },
+        id: 'show-debug-log',
+        name: 'Show debug log',
+        callback: () => { void this.showDebugLog(); },
       });
 
       await this.log.write('─── onload complete ───');
@@ -61,13 +54,28 @@ export default class ModularPlugin extends Plugin {
     }
   }
 
-  async onunload(): Promise<void> {
+  // Obsidian's Plugin.onunload is sync (void). Stay sync to satisfy
+  // no-misused-promises; no async work needed for teardown anyway.
+  onunload(): void {
     try {
       this.store?.stop();
     } catch (e) {
       console.error('[modular] onunload error:', e);
     }
     this.store = null;
+  }
+
+  private async showDebugLog(): Promise<void> {
+    try {
+      const text = await this.log.read();
+      if (text == null) { new Notice('Debug log not found'); return; }
+      // eslint-disable-next-line obsidianmd/rule-custom-message -- this command's whole purpose is to surface log text to devtools
+      console.log('[modular] ─── debug log ───\n' + text);
+      new Notice('Debug log printed to devtools console (⌘⌥i)');
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      new Notice(`Debug log read failed: ${msg}`);
+    }
   }
 
   private async activateView(): Promise<void> {
@@ -78,6 +86,6 @@ export default class ModularPlugin extends Plugin {
       leaf = ws.getLeaf(false);
       await leaf.setViewState({ type: VIEW_TYPE_MODULAR, active: true });
     }
-    ws.revealLeaf(leaf);
+    await ws.revealLeaf(leaf);
   }
 }

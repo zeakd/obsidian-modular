@@ -1,7 +1,7 @@
 // VaultStore — 폴더 nesting + .positions.json.
 // type / parent 는 path 의 폴더 구조가 결정 (frontmatter 무관).
 
-import { App, Menu, TFile, TFolder, WorkspaceLeaf, normalizePath } from 'obsidian';
+import { App, Menu, TAbstractFile, TFile, TFolder, WorkspaceLeaf, normalizePath } from 'obsidian';
 import type { Workspace, Module, Component, ComponentTask } from './types';
 import {
   moduleFromEntity,
@@ -50,16 +50,18 @@ export class VaultStore {
     void this.loadAllPositions().then(() => this.rebuild());
     const vault = this.app.vault;
     const mc = this.app.metadataCache;
-    const onCreate = (f: any) => { if (f instanceof TFile && isModularPath(f.path)) this.rebuild(); };
-    const onModify = (f: any) => {
+    const onCreate = (f: TAbstractFile) => {
+      if (f instanceof TFile && isModularPath(f.path)) this.rebuild();
+    };
+    const onModify = (f: TAbstractFile) => {
       if (f instanceof TFile && isModularPath(f.path)) this.rebuild();
       // 외부에서 .position 파일이 직접 수정되면 그 entity 만 reload.
-      if (f && typeof f.path === 'string' && /\.position$/.test(f.path) && f.path.startsWith(`${MODULAR_FOLDER}/`)) {
+      if (/\.position$/.test(f.path) && f.path.startsWith(`${MODULAR_FOLDER}/`)) {
         void this.loadSinglePositionByFile(f.path).then(() => this.rebuild());
       }
     };
-    const onDelete = (f: any) => {
-      const p = typeof f?.path === 'string' ? f.path : '';
+    const onDelete = (f: TAbstractFile) => {
+      const p = f.path;
       if (isModularPath(p)) {
         if (this.positions[p]) {
           delete this.positions[p];
@@ -69,12 +71,12 @@ export class VaultStore {
         this.rebuild();
       }
     };
-    const onRename = (f: any, oldPath: any) => {
+    const onRename = (f: TAbstractFile, oldPath: string) => {
       // 폴더 rename 도 자식별 emit 됨. path 만 보고 처리.
-      const newPath = typeof f?.path === 'string' ? f.path : '';
-      const newOk = newPath && isModularPath(newPath);
-      const oldOk = typeof oldPath === 'string' && isModularPath(oldPath);
-      if (oldOk && typeof oldPath === 'string' && this.positions[oldPath]) {
+      const newPath = f.path;
+      const newOk = isModularPath(newPath);
+      const oldOk = isModularPath(oldPath);
+      if (oldOk && this.positions[oldPath]) {
         const pos = this.positions[oldPath];
         delete this.positions[oldPath];
         if (newOk) this.positions[newPath] = pos;
@@ -84,7 +86,9 @@ export class VaultStore {
       }
       if (newOk || oldOk) this.rebuild();
     };
-    const onMcChange = (f: any) => { if (f instanceof TFile && isModularPath(f.path)) this.rebuild(); };
+    const onMcChange = (f: TFile) => {
+      if (isModularPath(f.path)) this.rebuild();
+    };
     const r1 = vault.on('create', onCreate);
     const r2 = vault.on('modify', onModify);
     const r3 = vault.on('delete', onDelete);
@@ -127,20 +131,25 @@ export class VaultStore {
       if (await adapter.exists(LEGACY_POSITIONS_PATH)) {
         try {
           const raw = await adapter.read(LEGACY_POSITIONS_PATH);
-          const parsed = JSON.parse(raw);
+          const parsed: unknown = JSON.parse(raw);
           if (parsed && typeof parsed === 'object') {
-            for (const [path, v] of Object.entries(parsed)) {
-              const obj = v as any;
-              if (obj && typeof obj.x === 'number' && typeof obj.y === 'number') {
-                this.positions[path] = { x: obj.x, y: obj.y };
+            for (const [path, v] of Object.entries(parsed as Record<string, unknown>)) {
+              if (v && typeof v === 'object' && 'x' in v && 'y' in v
+                  && typeof (v as { x: unknown }).x === 'number'
+                  && typeof (v as { y: unknown }).y === 'number') {
+                const pos = { x: (v as { x: number }).x, y: (v as { y: number }).y };
+                this.positions[path] = pos;
                 // 본체 md 가 존재할 때만 sidecar write — orphan 만들지 않음.
                 if (await adapter.exists(path)) {
-                  await this.writeSinglePosition(path, { x: obj.x, y: obj.y });
+                  await this.writeSinglePosition(path, pos);
                 }
               }
             }
           }
           await adapter.remove(LEGACY_POSITIONS_PATH);
+          // One-shot migration: user-visible toast is overkill but devtools
+          // breadcrumb helps debugging "where did my .positions.json go".
+          // eslint-disable-next-line obsidianmd/rule-custom-message -- diagnostic for a one-time migration
           console.log('[modular] migrated .positions.json → per-entity .position sidecars');
         } catch (e) {
           console.error('[modular] migration failed:', e);
@@ -174,10 +183,10 @@ export class VaultStore {
       const adapter = this.app.vault.adapter;
       if (!(await adapter.exists(sidecarPath))) return;
       const raw = await adapter.read(sidecarPath);
-      const parsed = JSON.parse(raw);
+      const parsed: unknown = JSON.parse(raw);
       if (!parsed || typeof parsed !== 'object') return;
-      const x = Number(parsed.x);
-      const y = Number(parsed.y);
+      const x = Number((parsed as { x?: unknown }).x);
+      const y = Number((parsed as { y?: unknown }).y);
       if (!Number.isFinite(x) || !Number.isFinite(y)) return;
       const entityPath = entityPathHint ?? this.entityPathFromSidecar(sidecarPath);
       if (!entityPath) return;
@@ -237,7 +246,7 @@ export class VaultStore {
       try {
         const adapter = this.app.vault.adapter;
         if (await adapter.exists(guess)) await adapter.remove(guess);
-      } catch {}
+      } catch { /* best-effort cleanup, ignore */ }
       return;
     }
     if (info.expanded) return; // 폴더 통째 삭제로 자동
@@ -273,7 +282,7 @@ export class VaultStore {
         modules.push(moduleFromEntity(f.path, fm, pos));
       } else {
         components.push(componentFromEntity(f.path, info.parentEntityPath!, fm, pos));
-        const ts = fm?.['modular-tasks'];
+        const ts: unknown = fm?.['modular-tasks'];
         if (Array.isArray(ts)) {
           for (const dest of ts) {
             if (typeof dest === 'string' && dest) rawTasks.push({ fromPath: f.path, toPath: dest });
@@ -374,7 +383,7 @@ export class VaultStore {
           const oldSidecar = `${leafPath.slice(0, leafPath.lastIndexOf('/'))}/.${basenameFromPath(leafPath)}.position`;
           const adapter = this.app.vault.adapter;
           if (await adapter.exists(oldSidecar)) await adapter.remove(oldSidecar);
-        } catch {}
+        } catch { /* best-effort cleanup, ignore */ }
         await this.writeSinglePosition(promoted.md, pos);
       }
     }
@@ -405,7 +414,9 @@ export class VaultStore {
         for (const k of Object.keys(this.positions)) {
           if (k === path || k.startsWith(prefix)) delete this.positions[k];
         }
-        await this.app.vault.delete(folder, true);
+        // trashFile honors the user's "Files & Links → Deleted files" preference
+        // (system trash / .trash / permanent). Vault.delete bypasses that.
+        await this.app.fileManager.trashFile(folder);
         return;
       }
     }
@@ -414,7 +425,7 @@ export class VaultStore {
     if (!(f instanceof TFile)) return;
     delete this.positions[path];
     await this.deleteSidecarForEntity(path);
-    await this.app.vault.delete(f);
+    await this.app.fileManager.trashFile(f);
   }
 
   /** entity 의 본체 md 와 (expanded 면) 폴더를 같이 rename. */
@@ -458,7 +469,7 @@ export class VaultStore {
       if (sf instanceof TFile) {
         await this.app.fileManager.renameFile(sf, normalizePath(newSidecar));
       }
-    } catch {}
+    } catch { /* best-effort cleanup, ignore */ }
     return newPath;
   }
 
@@ -467,8 +478,9 @@ export class VaultStore {
     const f = this.app.vault.getAbstractFileByPath(fromPath);
     if (!(f instanceof TFile)) return;
     const fm = this.app.metadataCache.getFileCache(f)?.frontmatter;
-    const existing = Array.isArray(fm?.['modular-tasks'])
-      ? (fm!['modular-tasks'] as string[]).filter((s) => typeof s === 'string')
+    const tasks: unknown = fm?.['modular-tasks'];
+    const existing = Array.isArray(tasks)
+      ? (tasks as unknown[]).filter((s): s is string => typeof s === 'string')
       : [];
     if (existing.includes(toPath)) return;
     await setOutgoingTasks(this.app, f, [...existing, toPath]);
@@ -478,8 +490,9 @@ export class VaultStore {
     const f = this.app.vault.getAbstractFileByPath(fromPath);
     if (!(f instanceof TFile)) return;
     const fm = this.app.metadataCache.getFileCache(f)?.frontmatter;
-    const existing = Array.isArray(fm?.['modular-tasks'])
-      ? (fm!['modular-tasks'] as string[]).filter((s) => typeof s === 'string')
+    const tasks: unknown = fm?.['modular-tasks'];
+    const existing = Array.isArray(tasks)
+      ? (tasks as unknown[]).filter((s): s is string => typeof s === 'string')
       : [];
     const next = existing.filter((p) => p !== toPath);
     if (next.length === existing.length) return;

@@ -121,8 +121,7 @@ export function promotedLeafPaths(leafPath: string): { folder: string; md: strin
   const info = entityInfo(leafPath);
   if (!info || info.expanded) return null;
   const base = basenameFromPath(leafPath);
-  const parentDir = leafPath.slice(0, -(`${base}.md`.length + 0)); // includes trailing slash? compute differently
-  // leafPath = parentDir/X.md → parentDir = leafPath without "X.md"
+  // leafPath = parentDir/X.md → parentDir = leafPath up to the last '/'
   const slashIdx = leafPath.lastIndexOf('/');
   const parentDirClean = leafPath.slice(0, slashIdx);
   const folder = `${parentDirClean}/${base}`;
