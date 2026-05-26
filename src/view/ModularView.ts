@@ -25,12 +25,8 @@ export class ModularView extends ItemView {
   async onOpen(): Promise<void> {
     const container = this.containerEl.children[1] as HTMLElement;
     container.empty();
-    container.style.padding = '0';
-    container.style.position = 'relative';
-    container.style.overflow = 'hidden';
-    const mount = container.createDiv();
-    mount.style.position = 'absolute';
-    mount.style.inset = '0';
+    container.addClass('modular-view-container');
+    const mount = container.createDiv({ cls: 'modular-view-mount' });
     this.root = createRoot(mount);
     this.root.render(createElement(ModularApp, { store: this.store }));
   }
