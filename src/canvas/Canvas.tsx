@@ -113,29 +113,41 @@ function CanvasInner({ store }: CanvasProps) {
   }, [rf]);
 
   // Tab → 선택된 entity 의 자식 component pending
+  // H2: Tab handler reads latest snapshot + selection via refs so the listener
+  // is attached once. Earlier deps `[w.modules, w.components, pending,
+  // selectedEntityPath]` produced new array identities on every snapshot tick
+  // → effect re-ran → remove/add listener → an in-flight keydown could land
+  // in the gap and be dropped.
+  const wRef = useRef(w);
+  wRef.current = w;
+  const selectedEntityPathRef = useRef(selectedEntityPath);
+  selectedEntityPathRef.current = selectedEntityPath;
+  const pendingRef = useRef(pending);
+  pendingRef.current = pending;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
       const inField = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
       if (inField) return;
       if (e.key !== 'Tab') return;
-      if (!selectedEntityPath) return;
-      if (pending) return;
+      const path = selectedEntityPathRef.current;
+      if (!path) return;
+      if (pendingRef.current) return;
       e.preventDefault();
-      // parent 의 현재 위치 + 기존 자식 개수로 새 위치
-      const parentModule = w.modules.find((m) => m.path === selectedEntityPath);
-      const parentComp = w.components.find((c) => c.path === selectedEntityPath);
+      const snap = wRef.current;
+      const parentModule = snap.modules.find((m) => m.path === path);
+      const parentComp = snap.components.find((c) => c.path === path);
       const parent = parentModule ?? parentComp;
       if (!parent) return;
-      const siblings = w.components.filter((c) => c.parentPath === selectedEntityPath);
+      const siblings = snap.components.filter((c) => c.parentPath === path);
       const x = parent.position.x + MODULE_W_EST + COMPONENT_GAP_X;
       const y = parent.position.y + siblings.length * COMPONENT_GAP_Y;
-      setPending({ kind: 'component', parentPath: selectedEntityPath, position: { x, y } });
+      setPending({ kind: 'component', parentPath: path, position: { x, y } });
       setSelectedId(PENDING_ID);
     };
     activeDocument.addEventListener('keydown', onKey);
     return () => activeDocument.removeEventListener('keydown', onKey);
-  }, [selectedEntityPath, w.modules, w.components, pending]);
+  }, []);
 
   const [rfNodes, setRfNodes] = useState<Node[]>([]);
   const [rfEdges, setRfEdges] = useState<Edge[]>([]);
@@ -146,6 +158,15 @@ function CanvasInner({ store }: CanvasProps) {
       const byId = new Map(current.map((n) => [n.id, n]));
       const next: Node[] = [];
       const componentsHidden = zoom < ZOOM_REVEAL;
+      // H1: only preserve the in-memory rfNodes position WHILE a drag is in
+      // flight (otherwise reactflow would yank the node back to snapshot
+      // mid-drag). Once drag completes, snapshot wins so external/programmatic
+      // position updates (peer sync, store.updateEntityPosition from elsewhere)
+      // are actually reflected on screen.
+      const dragInFlight = dragRef.current !== null;
+      const draggingId = dragRef.current?.modulePath ?? null;
+      const draggingChildren = dragRef.current?.childIds ?? [];
+      const isDragMember = (id: string) => id === draggingId || draggingChildren.includes(id);
 
       for (const m of w.modules) {
         const existing = byId.get(m.path);
@@ -159,7 +180,7 @@ function CanvasInner({ store }: CanvasProps) {
         next.push({
           id: m.path,
           type: 'module',
-          position: existing ? existing.position : m.position,
+          position: (dragInFlight && existing && isDragMember(m.path)) ? existing.position : m.position,
           data,
           draggable: m.path !== editingId,
           selected: m.path === selectedId,
@@ -177,7 +198,7 @@ function CanvasInner({ store }: CanvasProps) {
         next.push({
           id: c.path,
           type: 'component',
-          position: existing ? existing.position : c.position,
+          position: (dragInFlight && existing && isDragMember(c.path)) ? existing.position : c.position,
           data,
           draggable: c.path !== editingId,
           selected: c.path === selectedId,
@@ -286,6 +307,10 @@ function CanvasInner({ store }: CanvasProps) {
   const dragRef = useRef<{ modulePath: string; lastPos: { x: number; y: number }; childIds: string[] } | null>(null);
 
   const onNodeDragStart = useCallback((_: unknown, node: Node) => {
+    // H5: defensive clear at start — a previous drag that ended via Esc /
+    // focus loss / abort never fires onNodeDragStop, leaving dragRef populated
+    // with stale childIds. Always reset before assigning.
+    dragRef.current = null;
     // 재귀로 모든 후손 collect — module 뿐 아니라 component drag 도 자식 따라옴
     const collectDescendants = (rootPath: string): string[] => {
       const out: string[] = [];
@@ -302,10 +327,7 @@ function CanvasInner({ store }: CanvasProps) {
       return out;
     };
     const childIds = collectDescendants(node.id);
-    if (childIds.length === 0 && node.type !== 'module') {
-      dragRef.current = null;
-      return;
-    }
+    if (childIds.length === 0 && node.type !== 'module') return;
     dragRef.current = { modulePath: node.id, lastPos: { x: node.position.x, y: node.position.y }, childIds };
   }, [w.components]);
 
@@ -387,13 +409,13 @@ function CanvasInner({ store }: CanvasProps) {
 
   // 노드 클릭 = 선택 + side leaf 에서 그 md 자동 열기.
   // sideLeaf 가 살아 있으면 같은 leaf 의 파일만 교체, 죽었으면 새 split.
-  // path 가 같은 노드를 다시 클릭하면 reopen 안 함 (불필요한 reload 방지).
-  const lastOpenedRef = useRef<string | null>(null);
+  // H3: openInSideLeaf is cheap (just retargets the existing leaf). The
+  // earlier "skip when same as last clicked" optimization gave wrong UX
+  // when the user manually switched the side leaf to a different file —
+  // clicking the same node again did nothing. Drop the gate entirely.
   const onNodeClick: NodeMouseHandler = useCallback((_, node) => {
     if (node.id === PENDING_ID) return;
     setSelectedId(node.id);
-    if (lastOpenedRef.current === node.id) return;
-    lastOpenedRef.current = node.id;
     void store.openInSideLeaf(node.id);
   }, [store]);
 
@@ -430,10 +452,14 @@ function CanvasInner({ store }: CanvasProps) {
 
   const onPaneClick = useCallback(() => {
     setSelectedId(null);
-    lastOpenedRef.current = null;
   }, []);
 
   // delete + Esc + ⌘Enter
+  // H4: read selectedId via ref so the listener is attached once. The earlier
+  // `[selectedId, pending]` deps re-registered the handler on every selection
+  // change, which dropped any keydown that landed in the remove/add window.
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
@@ -442,9 +468,10 @@ function CanvasInner({ store }: CanvasProps) {
       if (e.key === 'Backspace' || e.key === 'Delete') {
         const sel = rf.getNodes().filter((n) => n.selected && n.id !== PENDING_ID);
         const selE = rf.getEdges().filter((ed) => ed.selected && !ed.id.startsWith('own:') && !ed.id.startsWith('agg:'));
+        const snap = wRef.current;
         for (const n of sel) {
           // expanded entity (자식 있을 가능성) 는 한 번 더 확인 받음
-          const hasChildren = w.components.some((c) => c.parentPath === n.id);
+          const hasChildren = snap.components.some((c) => c.parentPath === n.id);
           // eslint-disable-next-line no-alert -- intentional native confirm pending Modal port
           if (hasChildren && !confirm(`'${n.id}' 와 모든 자식을 삭제할까요? (폴더 통째로 사라집니다)`)) continue;
           void store.deleteEntity(n.id);
@@ -459,22 +486,23 @@ function CanvasInner({ store }: CanvasProps) {
         if (sel.length > 0) setSelectedId(null);
       }
       if (e.key === 'Escape' && !inField) {
-        if (pending) setPending(null);
+        if (pendingRef.current) setPending(null);
         setEditingId(null);
         setSelectedId(null);
       }
       // ⌘+Enter — 선택된 노드의 md 를 *새 split* 에서 열기 (sideLeaf 재사용 X).
       // 일반 클릭은 sideLeaf 재사용이라 빠른 전환, ⌘+Enter 는 비교용 별도 창.
       if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-        if (selectedId && selectedId !== PENDING_ID) {
+        const sel = selectedIdRef.current;
+        if (sel && sel !== PENDING_ID) {
           e.preventDefault();
-          void store.openInNewSplit(selectedId);
+          void store.openInNewSplit(sel);
         }
       }
     };
     activeDocument.addEventListener('keydown', onKey);
     return () => activeDocument.removeEventListener('keydown', onKey);
-  }, [rf, store, selectedId, pending]);
+  }, [rf, store]);
 
   return (
     <div className="modular-canvas" ref={rootRef}>
