@@ -27,7 +27,10 @@ function freshStore() {
   return { app, store };
 }
 
-async function waitTicks(n = 5): Promise<void> {
+// Bumped from 5 → 12 after the sim adopted an AsyncQueue (kit PR A):
+// mutations chain through a Promise tail and even adapter-level loops in
+// modular's loadAllPositions need more microtask hops to settle.
+async function waitTicks(n = 12): Promise<void> {
   for (let i = 0; i < n; i++) await Promise.resolve();
 }
 
