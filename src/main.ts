@@ -46,7 +46,7 @@ export default class ModularPlugin extends Plugin {
       });
 
       await this.log.write('─── onload complete ───');
-      new Notice('Modular loaded ✓', 3000);
+      new Notice('Modular loaded', 3000);
     } catch (err) {
       await this.log.error('onload failed', err);
       new Notice('Modular load failed — see _modular-debug.log', 10000);

@@ -30,7 +30,13 @@ import {
 type Listener = () => void;
 type PositionsMap = Record<string, { x: number; y: number }>;
 
-const EMPTY: Workspace = { modules: [], components: [], componentTasks: [] };
+// H8: frozen so an accidental mutation by a subscriber doesn't pollute every
+// future getSnapshot() that defaults to it.
+const EMPTY: Workspace = Object.freeze({
+  modules: Object.freeze([]) as readonly never[] as any,
+  components: Object.freeze([]) as readonly never[] as any,
+  componentTasks: Object.freeze([]) as readonly never[] as any,
+}) as Workspace;
 
 export class VaultStore {
   private app: App;
