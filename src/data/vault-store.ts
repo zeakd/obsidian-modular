@@ -1,5 +1,8 @@
-// VaultStore — 폴더 nesting + .positions.json.
+// VaultStore — 폴더 nesting 기반 entity 트리 + 각 entity 의 sidecar(.position).
 // type / parent 는 path 의 폴더 구조가 결정 (frontmatter 무관).
+//
+// (옛 단일 `.positions.json` 은 v0 마이그레이션 코드 안에만 남아 있고
+// 새로 쓰진 않음. loadAllPositions 가 한 번 분배 후 삭제.)
 
 import { App, Menu, TAbstractFile, TFile, TFolder, WorkspaceLeaf, normalizePath } from 'obsidian';
 import type { Workspace, Module, Component, ComponentTask } from './types';
@@ -38,6 +41,13 @@ export class VaultStore {
   // 캐시 in-memory; drag stop 마다 *그 entity 의 sidecar 만* write.
   private positions: PositionsMap = {};
   private positionsLoaded = false;
+  // Events that arrived before positionsLoaded; replayed once load resolves so
+  // we don't emit a (0,0)-fallback snapshot to subscribers (Canvas locks the
+  // first position it sees → all modules permanently at origin).
+  private pendingRebuild = false;
+  // Sidecar paths we just wrote ourselves; the vault modify event for them
+  // is self-originated and shouldn't trigger another rebuild (G8).
+  private suppressNextSidecarModify = new Set<string>();
   // 우측 split leaf 재사용 — 클릭마다 같은 leaf 의 파일이 바뀌도록.
   // detach 됐는지는 매번 getLeavesOfType 으로 검증.
   private sideLeaf: WorkspaceLeaf | null = null;
@@ -47,47 +57,59 @@ export class VaultStore {
   }
 
   start(): void {
-    void this.loadAllPositions().then(() => this.rebuild());
+    // G3: queue rebuilds until positions are loaded; flush as a single rebuild
+    // so subscribers see a coherent first snapshot (not (0,0)-fallback).
+    void this.loadAllPositions().then(() => {
+      if (this.pendingRebuild) this.pendingRebuild = false;
+      this.rebuild();
+    });
     const vault = this.app.vault;
     const mc = this.app.metadataCache;
     const onCreate = (f: TAbstractFile) => {
-      if (f instanceof TFile && isModularPath(f.path)) this.rebuild();
+      if (!(f instanceof TFile) || !isModularPath(f.path)) return;
+      // G4: a sidecar may already exist on disk (user copied <name>.md +
+      // .<name>.position together from another vault). Load it before
+      // rebuilding so the snapshot carries the real position.
+      void this.loadSinglePositionByEntity(f.path).then(() => this.requestRebuild());
     };
     const onModify = (f: TAbstractFile) => {
-      if (f instanceof TFile && isModularPath(f.path)) this.rebuild();
+      if (f instanceof TFile && isModularPath(f.path)) this.requestRebuild();
       // 외부에서 .position 파일이 직접 수정되면 그 entity 만 reload.
       if (/\.position$/.test(f.path) && f.path.startsWith(`${MODULAR_FOLDER}/`)) {
-        void this.loadSinglePositionByFile(f.path).then(() => this.rebuild());
+        // G8: skip self-originated writes from writeSinglePosition.
+        if (this.suppressNextSidecarModify.delete(f.path)) return;
+        void this.loadSinglePositionByFile(f.path).then(() => this.requestRebuild());
       }
     };
     const onDelete = (f: TAbstractFile) => {
       const p = f.path;
-      if (isModularPath(p)) {
-        if (this.positions[p]) {
-          delete this.positions[p];
-          // entity 의 .md 가 사라지면 sidecar 도 같이 정리.
-          void this.deleteSidecarForEntity(p);
-        }
-        this.rebuild();
-      }
+      if (!isModularPath(p)) return;
+      // G1: always clean up the sidecar (regardless of whether the position
+      // was in cache). Otherwise an entity deleted before its drag created
+      // a cache entry leaves an orphaned `.<base>.position` forever.
+      delete this.positions[p];
+      void this.deleteSidecarForEntity(p);
+      this.requestRebuild();
     };
     const onRename = (f: TAbstractFile, oldPath: string) => {
       // 폴더 rename 도 자식별 emit 됨. path 만 보고 처리.
       const newPath = f.path;
       const newOk = isModularPath(newPath);
       const oldOk = isModularPath(oldPath);
-      if (oldOk && this.positions[oldPath]) {
-        const pos = this.positions[oldPath];
+      const pos = this.positions[oldPath];
+      if (oldOk && pos) {
         delete this.positions[oldPath];
         if (newOk) this.positions[newPath] = pos;
-        // 새 path 의 sidecar 에 한 번 write — 폴더 rename 이면 .position 도 같이 따라왔지만
-        // leaf rename 인 경우 sibling 의 .<basename>.position 도 같이 옮겨야 한다.
         if (newOk) void this.writeSinglePosition(newPath, pos);
+        // G2: leaf-leaf rename via adapter (external editor) doesn't move the
+        // sibling `.<oldBase>.position` along with the .md. Remove it
+        // explicitly so the old sidecar doesn't linger.
+        void this.deleteSidecarForEntity(oldPath);
       }
-      if (newOk || oldOk) this.rebuild();
+      if (newOk || oldOk) this.requestRebuild();
     };
     const onMcChange = (f: TFile) => {
-      if (isModularPath(f.path)) this.rebuild();
+      if (isModularPath(f.path)) this.requestRebuild();
     };
     const r1 = vault.on('create', onCreate);
     const r2 = vault.on('modify', onModify);
@@ -115,6 +137,18 @@ export class VaultStore {
   };
   getSnapshot = (): Workspace => this.snapshot;
   private emit(): void { for (const fn of this.listeners) fn(); }
+
+  /**
+   * Buffer event-driven rebuilds until positions finish loading (G3).
+   * Once loaded, a single rebuild fires from the loadAllPositions chain.
+   */
+  private requestRebuild(): void {
+    if (!this.positionsLoaded) {
+      this.pendingRebuild = true;
+      return;
+    }
+    this.rebuild();
+  }
 
   // ── positions ────────────────────────────────────────────
   //
@@ -198,25 +232,31 @@ export class VaultStore {
 
   /** sidecar 경로 → 그 entity 의 md path 역추론.
    *  - `<folder>/.position`        → `<folder>/<basename(folder)>.md` (expanded)
-   *  - `<dir>/.<base>.position`    → `<dir>/<base>.md` (leaf) */
+   *  - `<dir>/.<base>.position`    → `<dir>/<base>.md` (leaf)
+   *
+   *  G5: validate the recovered path via entityInfo() before returning, so
+   *  unrelated `.position` files (e.g. someone parks `notes/.todo.position`)
+   *  don't pollute the positions cache.
+   */
   private entityPathFromSidecar(sidecarPath: string): string | null {
     if (!sidecarPath.endsWith('.position')) return null;
     const slashIdx = sidecarPath.lastIndexOf('/');
     if (slashIdx < 0) return null;
     const dir = sidecarPath.slice(0, slashIdx);
     const file = sidecarPath.slice(slashIdx + 1);
+    let candidate: string | null = null;
     if (file === '.position') {
       // expanded: <dir>/<basename(dir)>.md
       const dirSlash = dir.lastIndexOf('/');
       const folderName = dir.slice(dirSlash + 1);
-      return `${dir}/${folderName}.md`;
-    }
-    // leaf: .<base>.position
-    if (file.startsWith('.') && file.endsWith('.position')) {
+      candidate = `${dir}/${folderName}.md`;
+    } else if (file.startsWith('.') && file.endsWith('.position')) {
+      // leaf: .<base>.position
       const base = file.slice(1, -('.position'.length));
-      return `${dir}/${base}.md`;
+      candidate = `${dir}/${base}.md`;
     }
-    return null;
+    if (!candidate) return null;
+    return entityInfo(candidate) ? candidate : null;
   }
 
   /** 한 entity 의 sidecar 만 write — drag stop 마다 호출. */
@@ -225,9 +265,14 @@ export class VaultStore {
     if (!info) return;
     const side = positionSidecarPath(info, entityPath);
     try {
+      // Tag the sidecar path so the vault.modify event handler skips it
+      // (G8 — otherwise every drag stop fires a redundant rebuild on the
+      // next tick when the modify event arrives for our own write).
+      this.suppressNextSidecarModify.add(side);
       // expanded 면 폴더가 이미 있음. leaf 면 sibling 폴더 (= parent 폴더) 이미 있음.
       await this.app.vault.adapter.write(side, JSON.stringify(pos));
     } catch (e) {
+      this.suppressNextSidecarModify.delete(side);
       console.error('[modular] writeSinglePosition failed:', e);
     }
   }
@@ -281,7 +326,12 @@ export class VaultStore {
       if (info.kind === 'module') {
         modules.push(moduleFromEntity(f.path, fm, pos));
       } else {
-        components.push(componentFromEntity(f.path, info.parentEntityPath!, fm, pos));
+        // G6: parentEntityPath is typed nullable. A future refactor could
+        // legitimately return null (orphaned component); skip rather than
+        // emit a component with `parentPath = null as unknown as string`
+        // which then crashes Canvas edge wiring.
+        if (!info.parentEntityPath) continue;
+        components.push(componentFromEntity(f.path, info.parentEntityPath, fm, pos));
         const ts: unknown = fm?.['modular-tasks'];
         if (Array.isArray(ts)) {
           for (const dest of ts) {
@@ -508,17 +558,19 @@ export class VaultStore {
     const f = this.app.vault.getAbstractFileByPath(path);
     if (!(f instanceof TFile)) return;
     const ws = this.app.workspace;
-    let leaf = this.sideLeaf;
-    const alive = leaf
-      ? ws.getLeavesOfType('markdown').includes(leaf)
-        || ws.getLeavesOfType('empty').includes(leaf)
-      : false;
-    if (!leaf || !alive) {
-      leaf = ws.getLeaf('split', 'vertical');
-      leaf.setPinned(true);
-      this.sideLeaf = leaf;
+    const leaf = this.sideLeaf;
+    // G7: liveness via iterateAllLeaves (covers ANY current view type — pdf,
+    // image, canvas, search, etc.). The earlier markdown/empty check
+    // misidentified a still-open leaf as dead whenever the user switched it
+    // to a non-markdown view, producing a duplicate split.
+    const alive = leaf ? isLeafAttached(ws, leaf) : false;
+    let target = leaf;
+    if (!target || !alive) {
+      target = ws.getLeaf('split', 'vertical');
+      target.setPinned(true);
+      this.sideLeaf = target;
     }
-    await leaf.openFile(f, { active: false });
+    await target.openFile(f, { active: false });
   }
 
   /** ⌘+Enter — 항상 새 split. side leaf 재사용 안 함. */
@@ -579,4 +631,15 @@ export class VaultStore {
 
     menu.showAtMouseEvent(event);
   }
+}
+
+/**
+ * True iff `leaf` is still attached anywhere in the workspace tree.
+ * iterateAllLeaves visits every open leaf regardless of view type, so a
+ * sideLeaf the user retyped (markdown → pdf, etc.) is still recognized.
+ */
+function isLeafAttached(ws: { iterateAllLeaves: (cb: (l: WorkspaceLeaf) => void) => void }, leaf: WorkspaceLeaf): boolean {
+  let found = false;
+  ws.iterateAllLeaves((l) => { if (l === leaf) found = true; });
+  return found;
 }
