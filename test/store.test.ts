@@ -290,3 +290,43 @@ test('migrates legacy .positions.json to per-entity sidecars on first start', as
   const legacy = snap.modules.find((m: any) => m.name === 'legacy');
   expect(legacy?.position).toEqual({ x: 42, y: 84 });
 });
+
+// ── REVIEW_PLAN PR G ────────────────────────────────────────────────────
+
+test('G1: deleting a leaf entity with no cached position still removes the sidecar', async () => {
+  const { app, store } = freshStore();
+  store.start();
+  await waitTicks();
+  // Build a leaf component (sibling sidecar shape: <dir>/.<base>.position).
+  await store.createModule('p', { x: 0, y: 0 });
+  await waitTicks();
+  await app.vault.create('modular/p/leaf.md', '---\nmodular-tasks: []\n---\n');
+  await app.vault.adapter.write('modular/p/.leaf.position', JSON.stringify({ x: 7, y: 8 }));
+  await waitTicks();
+  expect(await app.vault.adapter.exists('modular/p/.leaf.position')).toBe(true);
+  // Synthesize the "never cached" state.
+  (store as any).positions = {};
+  await store.deleteEntity('modular/p/leaf.md');
+  await waitTicks();
+  expect(await app.vault.adapter.exists('modular/p/.leaf.position')).toBe(false);
+});
+
+test('G2: leaf-leaf rename via adapter removes the old sibling sidecar', async () => {
+  const { app, store } = freshStore();
+  store.start();
+  await waitTicks();
+  await store.createModule('parent', { x: 0, y: 0 });
+  await waitTicks();
+  await app.vault.create('modular/parent/leaf.md', '---\nmodular-tasks: []\n---\n');
+  await waitTicks();
+  await (store as any).updateEntityPosition('modular/parent/leaf.md', { x: 5, y: 6 });
+  await waitTicks();
+  expect(await app.vault.adapter.exists('modular/parent/.leaf.position')).toBe(true);
+
+  const f = app.vault.getAbstractFileByPath('modular/parent/leaf.md');
+  await app.fileManager.renameFile(f, 'modular/parent/renamed.md');
+  await waitTicks();
+
+  expect(await app.vault.adapter.exists('modular/parent/.leaf.position')).toBe(false);
+  expect(await app.vault.adapter.exists('modular/parent/.renamed.position')).toBe(true);
+});
