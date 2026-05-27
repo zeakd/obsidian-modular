@@ -1,6 +1,6 @@
 {
   "name": "obsidian-modular",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Modular plugin for Obsidian — diagram ↔ vault md sync.",
   "main": "main.js",
   "type": "module",
@@ -38,6 +38,8 @@
     "node": ">=22"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }
