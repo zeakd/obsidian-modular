@@ -4,7 +4,7 @@
 // (옛 단일 `.positions.json` 은 v0 마이그레이션 코드 안에만 남아 있고
 // 새로 쓰진 않음. loadAllPositions 가 한 번 분배 후 삭제.)
 
-import { App, Menu, TAbstractFile, TFile, TFolder, WorkspaceLeaf, normalizePath } from 'obsidian';
+import { App, Menu, Platform, TAbstractFile, TFile, TFolder, WorkspaceLeaf, normalizePath } from 'obsidian';
 import type { Workspace, Module, Component, ComponentTask } from './types';
 import {
   moduleFromEntity,
@@ -564,6 +564,14 @@ export class VaultStore {
     const f = this.app.vault.getAbstractFileByPath(path);
     if (!(f instanceof TFile)) return;
     const ws = this.app.workspace;
+    // Mobile has no vertical split — fall back to a tab on top of the
+    // current canvas. The "side" metaphor doesn't apply on small screens;
+    // the user swipes back to the canvas like any other tab.
+    if (Platform.isMobile) {
+      const tab = ws.getLeaf('tab');
+      await tab.openFile(f);
+      return;
+    }
     const leaf = this.sideLeaf;
     // G7: liveness via iterateAllLeaves (covers ANY current view type — pdf,
     // image, canvas, search, etc.). The earlier markdown/empty check
@@ -579,11 +587,13 @@ export class VaultStore {
     await target.openFile(f, { active: false });
   }
 
-  /** ⌘+Enter — 항상 새 split. side leaf 재사용 안 함. */
+  /** ⌘+Enter — 데스크탑에서 새 split, 모바일에선 새 tab. */
   async openInNewSplit(path: string): Promise<void> {
     const f = this.app.vault.getAbstractFileByPath(path);
     if (!(f instanceof TFile)) return;
-    const leaf = this.app.workspace.getLeaf('split', 'vertical');
+    const leaf = Platform.isMobile
+      ? this.app.workspace.getLeaf('tab')
+      : this.app.workspace.getLeaf('split', 'vertical');
     await leaf.openFile(f);
   }
 
