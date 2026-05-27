@@ -1,5 +1,4 @@
 // Floating edge — source/target 노드의 위치를 보고 가장 가까운 측면에서 bezier.
-// lab/personas/ideation/FloatingEdge.tsx 그대로.
 
 import { useMemo } from 'react';
 import { BaseEdge, getBezierPath, useStore, type EdgeProps, type ReactFlowState, Position } from 'reactflow';
