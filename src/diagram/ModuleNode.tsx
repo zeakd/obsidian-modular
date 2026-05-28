@@ -2,9 +2,9 @@
 // lab 학습: focus retry, transform: scale 금지(CSS).
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Handle, Position, type NodeProps } from 'reactflow';
+import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
 
-export interface ModuleNodeData {
+export interface ModuleNodeData extends Record<string, unknown> {
   name: string;
   tags: string[];
   editing: boolean;
@@ -12,7 +12,10 @@ export interface ModuleNodeData {
   onCancelName: () => void;
 }
 
-export function ModuleNode({ data, selected }: NodeProps<ModuleNodeData>) {
+// xyflow v12: NodeProps now takes the full Node type (not just the data).
+export type ModuleNodeType = Node<ModuleNodeData, 'module'>;
+
+export function ModuleNode({ data, selected }: NodeProps<ModuleNodeType>) {
   const { editing, name, tags, onCommitName, onCancelName } = data;
   const [value, setValue] = useState(name);
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -83,7 +86,7 @@ export function ModuleNode({ data, selected }: NodeProps<ModuleNodeData>) {
         )}
         {tags.length > 0 && (
           <div className="mn-tags">
-            {tags.map((t) => (
+            {tags.map((t: string) => (
               <span key={t} className="mn-tag">{t}</span>
             ))}
           </div>

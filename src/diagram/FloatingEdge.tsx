@@ -1,7 +1,7 @@
 // Floating edge — source/target 노드의 위치를 보고 가장 가까운 측면에서 bezier.
 
 import { useMemo } from 'react';
-import { BaseEdge, getBezierPath, useStore, type EdgeProps, type ReactFlowState, Position } from 'reactflow';
+import { BaseEdge, getBezierPath, useStore, type EdgeProps, type ReactFlowState, Position } from '@xyflow/react';
 
 interface NodeRect { x: number; y: number; width: number; height: number }
 
@@ -29,19 +29,21 @@ function getIntersection(from: NodeRect, to: NodeRect): { x: number; y: number; 
 export function FloatingEdge(props: EdgeProps) {
   const { id, source, target, style, markerEnd, selected } = props;
 
-  const sourceNode = useStore((s: ReactFlowState) => s.nodeInternals.get(source));
-  const targetNode = useStore((s: ReactFlowState) => s.nodeInternals.get(target));
+  // xyflow v12: `nodeInternals` was renamed to `nodeLookup`, and node
+  // dimensions/positions live under `measured` (size) + `internals.positionAbsolute`.
+  const sourceNode = useStore((s: ReactFlowState) => s.nodeLookup.get(source));
+  const targetNode = useStore((s: ReactFlowState) => s.nodeLookup.get(target));
 
   const path = useMemo(() => {
     if (!sourceNode || !targetNode) return '';
-    const sw = sourceNode.width ?? 120;
-    const sh = sourceNode.height ?? 36;
-    const tw = targetNode.width ?? 120;
-    const th = targetNode.height ?? 36;
-    const sx = sourceNode.positionAbsolute?.x ?? sourceNode.position.x;
-    const sy = sourceNode.positionAbsolute?.y ?? sourceNode.position.y;
-    const tx = targetNode.positionAbsolute?.x ?? targetNode.position.x;
-    const ty = targetNode.positionAbsolute?.y ?? targetNode.position.y;
+    const sw = sourceNode.measured?.width ?? sourceNode.width ?? 120;
+    const sh = sourceNode.measured?.height ?? sourceNode.height ?? 36;
+    const tw = targetNode.measured?.width ?? targetNode.width ?? 120;
+    const th = targetNode.measured?.height ?? targetNode.height ?? 36;
+    const sx = sourceNode.internals.positionAbsolute.x;
+    const sy = sourceNode.internals.positionAbsolute.y;
+    const tx = targetNode.internals.positionAbsolute.x;
+    const ty = targetNode.internals.positionAbsolute.y;
     const sRect: NodeRect = { x: sx, y: sy, width: sw, height: sh };
     const tRect: NodeRect = { x: tx, y: ty, width: tw, height: th };
     const s = getIntersection(sRect, tRect);
