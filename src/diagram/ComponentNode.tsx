@@ -1,16 +1,19 @@
 // Component 노드 — 이름 = 파일명. commit → vault rename.
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Handle, Position, type NodeProps } from 'reactflow';
+import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
 
-export interface ComponentNodeData {
+export interface ComponentNodeData extends Record<string, unknown> {
   name: string;
   editing: boolean;
   onCommitName: (next: string) => void;
   onCancelName: () => void;
 }
 
-export function ComponentNode({ data, selected }: NodeProps<ComponentNodeData>) {
+// xyflow v12: NodeProps now takes the full Node type.
+export type ComponentNodeType = Node<ComponentNodeData, 'component'>;
+
+export function ComponentNode({ data, selected }: NodeProps<ComponentNodeType>) {
   const { editing, name, onCommitName, onCancelName } = data;
   const [value, setValue] = useState(name);
   const taRef = useRef<HTMLTextAreaElement>(null);

@@ -6,7 +6,8 @@
 // 기존 entity 의 이름 편집 (노드 더블클릭) 은 vault.fileManager.renameFile.
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import ReactFlow, {
+import {
+  ReactFlow,
   Background,
   BackgroundVariant,
   ReactFlowProvider,
@@ -22,7 +23,7 @@ import ReactFlow, {
   type EdgeChange,
   type NodeMouseHandler,
   type ReactFlowState,
-} from 'reactflow';
+} from '@xyflow/react';
 
 import { Notice } from 'obsidian';
 import type { VaultStore } from '../data/vault-store';
@@ -521,7 +522,7 @@ function CanvasInner({ store }: CanvasProps) {
         onNodeDragStart={onNodeDragStart}
         onNodeDrag={onNodeDrag}
         onNodeDragStop={onNodeDragStop}
-        onReconnect={(oldEdge, newConn) => {
+        onReconnect={(oldEdge: Edge, newConn: Connection) => {
           if (!newConn.source || !newConn.target) return;
           if (oldEdge.id.startsWith('own:') || oldEdge.id.startsWith('agg:')) return;
           if (oldEdge.id.startsWith('task:')) {

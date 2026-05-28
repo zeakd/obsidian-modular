@@ -33,10 +33,10 @@ type PositionsMap = Record<string, { x: number; y: number }>;
 // H8: frozen so an accidental mutation by a subscriber doesn't pollute every
 // future getSnapshot() that defaults to it.
 const EMPTY: Workspace = Object.freeze({
-  modules: Object.freeze([]) as readonly never[] as any,
-  components: Object.freeze([]) as readonly never[] as any,
-  componentTasks: Object.freeze([]) as readonly never[] as any,
-}) as Workspace;
+  modules: Object.freeze<Module[]>([]) as unknown as Module[],
+  components: Object.freeze<Component[]>([]) as unknown as Component[],
+  componentTasks: Object.freeze<ComponentTask[]>([]) as unknown as ComponentTask[],
+});
 
 export class VaultStore {
   private app: App;
