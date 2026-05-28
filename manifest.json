@@ -1,7 +1,7 @@
 {
   "id": "modular",
   "name": "Modular",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "minAppVersion": "1.7.2",
   "description": "모듈·컴포넌트 다이어그램과 vault 파일을 양방향 동기화하는 도구.",
   "author": "homemini",
