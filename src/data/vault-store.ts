@@ -52,6 +52,8 @@ export class VaultStore {
   private folderPathById = new Map<EntityId, string>();
   /** folder path → id. inverse of folderPathById. */
   private idByFolderPath = new Map<string, EntityId>();
+  /** id → cached body excerpt (frontmatter 제거된 첫 ~400자). 비동기로 채움. */
+  private bodyExcerptById = new Map<EntityId, string>();
   private sideLeaf: WorkspaceLeaf | null = null;
 
   constructor(app: App) {
@@ -70,7 +72,13 @@ export class VaultStore {
       if (f instanceof TFile && isEntityIndexPath(f.path)) this.requestRebuild();
     };
     const onModify = (f: TAbstractFile) => {
-      if (f instanceof TFile && isEntityIndexPath(f.path)) this.requestRebuild();
+      if (f instanceof TFile && isEntityIndexPath(f.path)) {
+        // body 변화 시 캐시 invalidate — rebuild 가 새로 읽음.
+        const folderPath = folderPathFromIndex(f.path);
+        const id = this.idByFolderPath.get(folderPath);
+        if (id) this.bodyExcerptById.delete(id);
+        this.requestRebuild();
+      }
       if (isPositionSidecarPath(f.path)) {
         if (this.suppressNextSidecarModify.delete(f.path)) return;
         void this.loadSinglePositionByFile(f.path).then(() => this.requestRebuild());
@@ -236,6 +244,8 @@ export class VaultStore {
     this.folderPathById.clear();
     this.idByFolderPath.clear();
 
+    const seenIds = new Set<EntityId>();
+    const filesToReadBodyFor: Array<{ id: EntityId; file: TFile }> = [];
     for (const f of vault.getMarkdownFiles()) {
       if (!isEntityIndexPath(f.path)) continue;
       const fm = mc.getFileCache(f)?.frontmatter;
@@ -245,15 +255,35 @@ export class VaultStore {
       const pos = this.positions[id] ?? { x: 0, y: 0 };
       const ent = entityFromIndex(f.path, fm, pos);
       if (!ent) continue;
+      ent.bodyExcerpt = this.bodyExcerptById.get(id);
       entities.set(id, ent);
       this.folderPathById.set(id, folderPath);
       this.idByFolderPath.set(folderPath, id);
+      seenIds.add(id);
+      if (!this.bodyExcerptById.has(id)) filesToReadBodyFor.push({ id, file: f });
       const tasks: unknown = fm?.['modular-tasks'];
       if (Array.isArray(tasks)) {
         for (const t of tasks) {
           if (typeof t === 'string' && t.length > 0) tasksRaw.push({ fromId: id, toId: t });
         }
       }
+    }
+    // Drop excerpts for deleted entities.
+    for (const id of [...this.bodyExcerptById.keys()]) {
+      if (!seenIds.has(id)) this.bodyExcerptById.delete(id);
+    }
+    // Read body excerpts asynchronously for any entities we haven't yet,
+    // then re-emit so nodes can show preview. First rebuild ships with
+    // no excerpts; second one (after reads settle) carries them.
+    if (filesToReadBodyFor.length > 0) {
+      void Promise.all(filesToReadBodyFor.map(async ({ id, file }) => {
+        try {
+          const body = await vault.read(file);
+          this.bodyExcerptById.set(id, stripFrontmatter(body).slice(0, 400));
+        } catch {
+          this.bodyExcerptById.set(id, '');
+        }
+      })).then(() => this.rebuild());
     }
 
     // Filter tasks: both endpoints must exist + dedup.
@@ -482,4 +512,10 @@ function isLeafAttached(
   let found = false;
   ws.iterateAllLeaves((l) => { if (l === leaf) found = true; });
   return found;
+}
+
+/** Drop YAML frontmatter block (`---…---`) from body. */
+function stripFrontmatter(body: string): string {
+  const m = body.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/);
+  return m ? body.slice(m[0].length) : body;
 }

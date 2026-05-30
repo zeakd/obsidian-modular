@@ -1,13 +1,16 @@
 // Module 노드 — 마인드맵 톤. 이름 = 파일명. commit 시 vault rename, blur 시 commit, Esc 시 취소.
 // lab 학습: focus retry, transform: scale 금지(CSS).
+//
+// PR-1: zoom-density. zoom 따라 표시 정보 늘림 — name only / +tags / +body excerpt.
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
+import { Handle, Position, useStore, type Node, type NodeProps, type ReactFlowState } from '@xyflow/react';
 
 export interface ModuleNodeData extends Record<string, unknown> {
   name: string;
   tags: string[];
   editing: boolean;
+  bodyExcerpt?: string;
   onCommitName: (next: string) => void;
   onCancelName: () => void;
 }
@@ -16,7 +19,12 @@ export interface ModuleNodeData extends Record<string, unknown> {
 export type ModuleNodeType = Node<ModuleNodeData, 'module'>;
 
 export function ModuleNode({ data, selected }: NodeProps<ModuleNodeType>) {
-  const { editing, name, tags, onCommitName, onCancelName } = data;
+  const { editing, name, tags, bodyExcerpt, onCommitName, onCancelName } = data;
+  // zoom-density: hide body when zoomed out, show ever-richer slice when in.
+  const zoom = useStore((s: ReactFlowState) => s.transform[2]);
+  const showTags = zoom >= 0.5;
+  const showBody = zoom >= 0.9 && !!bodyExcerpt;
+  const bodyLines = zoom >= 1.5 ? 6 : zoom >= 1.2 ? 4 : 2;
   const [value, setValue] = useState(name);
   const taRef = useRef<HTMLTextAreaElement>(null);
 
@@ -84,11 +92,19 @@ export function ModuleNode({ data, selected }: NodeProps<ModuleNodeType>) {
         ) : (
           <span className="mn-name">{name || '제목 없음'}</span>
         )}
-        {tags.length > 0 && (
+        {showTags && tags.length > 0 && (
           <div className="mn-tags">
             {tags.map((t: string) => (
               <span key={t} className="mn-tag">{t}</span>
             ))}
+          </div>
+        )}
+        {showBody && (
+          <div
+            className="mn-body-excerpt"
+            style={{ WebkitLineClamp: bodyLines }}
+          >
+            {bodyExcerpt}
           </div>
         )}
       </div>

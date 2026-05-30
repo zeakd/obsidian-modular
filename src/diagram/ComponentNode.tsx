@@ -1,11 +1,13 @@
 // Component 노드 — 이름 = 파일명. commit → vault rename.
+// PR-1: zoom-density excerpt — zoom >= 1.0 시 본문 발췌 표시.
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
+import { Handle, Position, useStore, type Node, type NodeProps, type ReactFlowState } from '@xyflow/react';
 
 export interface ComponentNodeData extends Record<string, unknown> {
   name: string;
   editing: boolean;
+  bodyExcerpt?: string;
   onCommitName: (next: string) => void;
   onCancelName: () => void;
 }
@@ -14,7 +16,10 @@ export interface ComponentNodeData extends Record<string, unknown> {
 export type ComponentNodeType = Node<ComponentNodeData, 'component'>;
 
 export function ComponentNode({ data, selected }: NodeProps<ComponentNodeType>) {
-  const { editing, name, onCommitName, onCancelName } = data;
+  const { editing, name, bodyExcerpt, onCommitName, onCancelName } = data;
+  const zoom = useStore((s: ReactFlowState) => s.transform[2]);
+  const showBody = zoom >= 1.0 && !!bodyExcerpt;
+  const bodyLines = zoom >= 1.5 ? 4 : 2;
   const [value, setValue] = useState(name);
   const taRef = useRef<HTMLTextAreaElement>(null);
 
@@ -79,6 +84,14 @@ export function ComponentNode({ data, selected }: NodeProps<ComponentNodeType>) 
         />
       ) : (
         <span className="cn-name">{name || '…'}</span>
+      )}
+      {showBody && (
+        <div
+          className="cn-body-excerpt"
+          style={{ WebkitLineClamp: bodyLines }}
+        >
+          {bodyExcerpt}
+        </div>
       )}
     </div>
   );

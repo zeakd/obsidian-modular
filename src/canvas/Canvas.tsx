@@ -177,6 +177,7 @@ function CanvasInner({ store }: CanvasProps) {
           name: m.name,
           tags: m.tags ?? [],
           editing: m.id === editingId,
+          bodyExcerpt: m.bodyExcerpt,
           onCommitName: (v: string) => onCommitRename(m.id, v),
           onCancelName: onCancelRename,
         };
@@ -195,6 +196,7 @@ function CanvasInner({ store }: CanvasProps) {
         const data: ComponentNodeData = {
           name: c.name,
           editing: c.id === editingId,
+          bodyExcerpt: c.bodyExcerpt,
           onCommitName: (v: string) => onCommitRename(c.id, v),
           onCancelName: onCancelRename,
         };
