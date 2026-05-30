@@ -26,6 +26,10 @@ export interface Entity {
    * 미리보기. 빈 entity 면 빈 문자열. async 로 채워지고 못 읽었으면 undefined.
    */
   bodyExcerpt?: string;
+  /** _index.md ctime (ms since epoch). entity가 처음 만들어진 시점. */
+  createdMs?: number;
+  /** _index.md mtime (ms since epoch). 마지막 본문/frontmatter 변경. */
+  modifiedMs?: number;
 }
 
 export interface Task {

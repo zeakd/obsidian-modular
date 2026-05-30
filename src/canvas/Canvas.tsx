@@ -170,6 +170,14 @@ function CanvasInner({ store }: CanvasProps) {
       const draggingId = dragRef.current?.entityId ?? null;
       const draggingChildren = dragRef.current?.childIds ?? [];
       const isDragMember = (id: string) => id === draggingId || draggingChildren.includes(id);
+      // Freshness: decay 0 → 1 over the last 24h. "최근에 변경됨"이 glow 로 보이게.
+      const now = Date.now();
+      const freshness = (ms?: number): number | undefined => {
+        if (!ms) return undefined;
+        const ageH = (now - ms) / 3600_000;
+        if (ageH >= 24) return 0;
+        return Math.max(0, 1 - ageH / 24);
+      };
 
       for (const m of modules) {
         const existing = prevById.get(m.id);
@@ -178,6 +186,7 @@ function CanvasInner({ store }: CanvasProps) {
           tags: m.tags ?? [],
           editing: m.id === editingId,
           bodyExcerpt: m.bodyExcerpt,
+          freshness: freshness(m.modifiedMs),
           onCommitName: (v: string) => onCommitRename(m.id, v),
           onCancelName: onCancelRename,
         };
@@ -197,6 +206,7 @@ function CanvasInner({ store }: CanvasProps) {
           name: c.name,
           editing: c.id === editingId,
           bodyExcerpt: c.bodyExcerpt,
+          freshness: freshness(c.modifiedMs),
           onCommitName: (v: string) => onCommitRename(c.id, v),
           onCancelName: onCancelRename,
         };

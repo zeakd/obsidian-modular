@@ -11,6 +11,8 @@ export interface ModuleNodeData extends Record<string, unknown> {
   tags: string[];
   editing: boolean;
   bodyExcerpt?: string;
+  /** "최근 변경"의 강도 (0-1). 1 = 방금 변경, 0 = 오래 전. CSS opacity 로 glow. */
+  freshness?: number;
   onCommitName: (next: string) => void;
   onCancelName: () => void;
 }
@@ -19,7 +21,7 @@ export interface ModuleNodeData extends Record<string, unknown> {
 export type ModuleNodeType = Node<ModuleNodeData, 'module'>;
 
 export function ModuleNode({ data, selected }: NodeProps<ModuleNodeType>) {
-  const { editing, name, tags, bodyExcerpt, onCommitName, onCancelName } = data;
+  const { editing, name, tags, bodyExcerpt, freshness, onCommitName, onCancelName } = data;
   // zoom-density: hide body when zoomed out, show ever-richer slice when in.
   const zoom = useStore((s: ReactFlowState) => s.transform[2]);
   const showTags = zoom >= 0.5;
@@ -64,7 +66,10 @@ export function ModuleNode({ data, selected }: NodeProps<ModuleNodeType>) {
   const cancel = () => { setValue(name); onCancelName(); };
 
   return (
-    <div className={`mn ${selected ? 'mn-selected' : ''} ${editing ? 'mn-editing' : ''}`}>
+    <div
+      className={`mn ${selected ? 'mn-selected' : ''} ${editing ? 'mn-editing' : ''}`}
+      style={freshness && freshness > 0 ? { ['--m-freshness' as never]: freshness.toFixed(3) } : undefined}
+    >
       <Handle id="l" type="source" position={Position.Left} className="mn-handle" />
       <Handle id="r" type="source" position={Position.Right} className="mn-handle" />
       <Handle id="t" type="source" position={Position.Top} className="mn-handle" />

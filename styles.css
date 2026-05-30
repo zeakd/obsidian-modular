@@ -372,3 +372,14 @@
   font-size: 10.5px;
   margin-top: 4px;
 }
+
+/* ── PR-2: activity glow ───────────────────────────────────────────────── */
+/* `--m-freshness` (0-1) set inline on the node when it was modified recently.
+ * Decays linearly over the last 24h. Glow is a subtle accent ring overlay. */
+.modular-canvas .mn[style*="--m-freshness"],
+.modular-canvas .cn[style*="--m-freshness"] {
+  box-shadow:
+    0 0 0 1px var(--m-hair),
+    0 0 calc(var(--m-freshness, 0) * 18px) calc(var(--m-freshness, 0) * 6px)
+      rgba(var(--accent-rgb, 91 138 255), calc(var(--m-freshness, 0) * 0.45));
+}

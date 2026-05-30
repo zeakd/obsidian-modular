@@ -256,6 +256,8 @@ export class VaultStore {
       const ent = entityFromIndex(f.path, fm, pos);
       if (!ent) continue;
       ent.bodyExcerpt = this.bodyExcerptById.get(id);
+      ent.createdMs = f.stat.ctime;
+      ent.modifiedMs = f.stat.mtime;
       entities.set(id, ent);
       this.folderPathById.set(id, folderPath);
       this.idByFolderPath.set(folderPath, id);
