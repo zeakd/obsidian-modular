@@ -352,8 +352,43 @@ function CanvasInner({ store }: CanvasProps) {
     );
   }, []);
 
-  const onNodeDragStop = useCallback((_: unknown, node: Node) => {
+  const onNodeDragStop = useCallback((evt: unknown, node: Node) => {
     if (node.id === PENDING_ID) return;
+    // PR-6: drag stop 시점의 마우스 위치 아래 다른 노드가 있으면 부모 변경 후보.
+    // MouseEvent 의 clientX/Y 로 elementFromPoint → 'react-flow__node' 클래스
+    // 까지 ancestor 탐색 → data-id attribute 추출.
+    const mouseEvent = evt as MouseEvent | undefined;
+    const droppedOnId = mouseEvent && typeof mouseEvent.clientX === 'number'
+      ? findNodeIdAt(mouseEvent.clientX, mouseEvent.clientY, node.id)
+      : null;
+    if (droppedOnId && droppedOnId !== node.id) {
+      const snap = wRef.current;
+      const target = snap.entities.get(droppedOnId);
+      const moving = snap.entities.get(node.id);
+      if (target && moving) {
+        // 자기 자신의 자손에는 못 옮김 — moveEntity 가 throw 하므로 미리 안내.
+        void (async () => {
+          const ok = await confirmModal(store.getApp(), {
+            title: '부모 변경',
+            message: `'${moving.name}' 를 '${target.name}' 의 자식으로 옮길까요? (폴더 이동 + frontmatter parent 갱신)`,
+            confirmLabel: '옮기기',
+          });
+          if (!ok) {
+            // Drop 취소 → position 만 store 에 반영하고 끝.
+            await store.updateEntityPosition(node.id, { x: node.position.x, y: node.position.y });
+            return;
+          }
+          try {
+            await store.moveEntity(node.id, droppedOnId);
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            new Notice(`Modular: cannot move — ${msg}`, 4000);
+          }
+        })();
+        dragRef.current = null;
+        return;
+      }
+    }
     void store.updateEntityPosition(node.id, { x: node.position.x, y: node.position.y });
     const off = dragRef.current;
     if (off && off.entityId === node.id) {
@@ -660,6 +695,23 @@ function Status({
       <span><kbd>delete</kbd> 삭제</span>
     </div>
   );
+}
+
+/**
+ * PR-6: Drop-target detection. clientX/Y 위치에서 react-flow node element 를
+ * 거슬러 올라가 data-id attribute 를 뽑음. 단, dragging 노드 자신은 제외
+ * (자기 자신 위에 있는 위치 무시).
+ */
+function findNodeIdAt(x: number, y: number, excludeId: string): string | null {
+  const elems = activeDocument.elementsFromPoint(x, y);
+  for (const el of elems) {
+    if (!('closest' in el)) continue;
+    const nodeEl = el.closest('.react-flow__node');
+    if (!nodeEl) continue;
+    const id = nodeEl.getAttribute('data-id');
+    if (id && id !== excludeId) return id;
+  }
+  return null;
 }
 
 export function Canvas(props: CanvasProps) {
