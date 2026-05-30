@@ -445,6 +445,37 @@ export class VaultStore {
     }
   }
 
+  /**
+   * PR-6: entity 의 부모 변경. 폴더 이동 + frontmatter modular-parent 갱신.
+   * newParentId === null 이면 root (modular/<name>) 로.
+   */
+  async moveEntity(id: EntityId, newParentId: EntityId | null): Promise<void> {
+    const folderPath = this.folderPathById.get(id);
+    if (!folderPath) return;
+    const name = nameFromFolderPath(folderPath);
+    const newParentFolder = newParentId === null
+      ? MODULAR_FOLDER
+      : this.folderPathById.get(newParentId);
+    if (!newParentFolder) return;
+    const newFolderPath = `${newParentFolder}/${name}`;
+    if (newFolderPath === folderPath) return; // no-op
+    // Refuse moving an entity into its own descendant.
+    if (newFolderPath.startsWith(folderPath + '/')) {
+      throw new Error('cannot move an entity into its own descendant');
+    }
+    const folder = this.app.vault.getAbstractFileByPath(folderPath);
+    if (!(folder instanceof TFolder)) return;
+    await this.app.fileManager.renameFile(folder, normalizePath(newFolderPath));
+    // Update modular-parent in frontmatter (kind may flip if moving in/out of root).
+    const indexFile = this.app.vault.getAbstractFileByPath(`${newFolderPath}/${INDEX_FILE}`);
+    if (indexFile instanceof TFile) {
+      await this.app.fileManager.processFrontMatter(indexFile, (fm: Record<string, unknown>) => {
+        if (newParentId === null) delete fm['modular-parent'];
+        else fm['modular-parent'] = newParentId;
+      });
+    }
+  }
+
   async renameEntity(id: EntityId, newName: string): Promise<EntityId | null> {
     const folderPath = this.folderPathById.get(id);
     if (!folderPath) return null;
