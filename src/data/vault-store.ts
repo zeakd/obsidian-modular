@@ -74,7 +74,11 @@ export class VaultStore {
     const mc = this.app.metadataCache;
 
     const onCreate = (f: TAbstractFile) => {
-      if (f instanceof TFile && isEntityIndexPath(f.path)) this.requestRebuild();
+      if (f instanceof TFile && isEntityIndexPath(f.path)) {
+        // PR-8: vault explorer / 외부 editor 가 만든 _index.md 면 id 가 없을 수
+        // 있음. 자동으로 부여 (frontmatter patch) — 사용자가 ULID 외울 필요 X.
+        void this.ensureIdOnIndex(f).then(() => this.requestRebuild());
+      }
     };
     const onModify = (f: TAbstractFile) => {
       if (f instanceof TFile && isEntityIndexPath(f.path)) {
@@ -166,6 +170,43 @@ export class VaultStore {
   };
   getSnapshot = (): Workspace => this.snapshot;
   private emit(): void { for (const fn of this.listeners) fn(); }
+
+  // ── auto-id (PR-8) ─────────────────────────────────────────────────────
+
+  /**
+   * vault 측에서 _index.md 가 새로 생기면 frontmatter `modular-id` 가 빠져
+   * 있을 수 있음. 자동으로 ULID 부여 + parent id 추정 (폴더 nesting).
+   */
+  private async ensureIdOnIndex(f: TFile): Promise<void> {
+    try {
+      const fm = this.app.metadataCache.getFileCache(f)?.frontmatter;
+      const existingRaw: unknown = fm?.['modular-id'];
+      const existing = typeof existingRaw === 'string' ? existingRaw : null;
+      if (existing && existing.length > 0) return;
+      const folderPath = folderPathFromIndex(f.path);
+      const kind = (folderPath.split('/').length === 2) ? 'module' : 'component';
+      const newEntityId = newId();
+      await this.app.fileManager.processFrontMatter(f, (front: Record<string, unknown>) => {
+        front['modular-id'] = newEntityId;
+        if (kind === 'component' && !front['modular-parent']) {
+          // 부모 폴더에 _index.md 가 있으면 그 id 를 parent 로.
+          const parentFolder = folderPath.slice(0, folderPath.lastIndexOf('/'));
+          const parentIndexFile = this.app.vault.getAbstractFileByPath(
+            `${parentFolder}/${INDEX_FILE}`,
+          );
+          if (parentIndexFile instanceof TFile) {
+            const parentFm = this.app.metadataCache.getFileCache(parentIndexFile)?.frontmatter;
+            const parentIdMaybe: unknown = parentFm?.['modular-id'];
+            if (typeof parentIdMaybe === 'string' && parentIdMaybe.length > 0) {
+              front['modular-parent'] = parentIdMaybe;
+            }
+          }
+        }
+      });
+    } catch (e) {
+      console.error('[modular] ensureIdOnIndex failed:', e);
+    }
+  }
 
   // ── pin (PR-5) ─────────────────────────────────────────────────────────
 
