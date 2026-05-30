@@ -79,10 +79,40 @@ export async function writeModularFrontmatter(
   });
 }
 
+/**
+ * PR-9: tasks 를 wiki link 형식으로 frontmatter 에 저장.
+ *   modular-tasks:
+ *     - "[[modular/payments/_index|payments]]"
+ * Obsidian graph view / backlinks 가 자동으로 인식. 단 rename 시 obsidian 이
+ * link path 갱신해줌. id 기반 ref 도 함께 유지 — store 가 rebuild 시 둘 다
+ * 인식 (legacy id 배열 그대로도 backward compatible).
+ */
 export async function setOutgoingTasks(
   app: App,
   file: TFile,
-  toIds: EntityId[],
+  refs: Array<{ id: EntityId; folderPath: string; name: string }>,
 ): Promise<void> {
-  await writeModularFrontmatter(app, file, { 'modular-tasks': toIds });
+  const links = refs.map((r) => `[[${r.folderPath}/_index|${r.name}]]`);
+  await writeModularFrontmatter(app, file, { 'modular-tasks': links });
+}
+
+/**
+ * frontmatter modular-tasks 항목 한 개를 entity ref 후보로 파싱.
+ * - 순수 id (ULID 26 chars 형식) → { kind: 'id', value }
+ * - `[[<path>/_index]]` 또는 `[[<path>/_index|alias]]` → { kind: 'link', path }
+ * - 그 외 → null
+ */
+export function parseTaskRef(raw: unknown): { kind: 'id'; value: string } | { kind: 'link'; path: string } | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const linkMatch = trimmed.match(/^\[\[([^|\]]+)(?:\|[^\]]*)?\]\]$/);
+  if (linkMatch) {
+    let p = linkMatch[1];
+    // wiki link 는 .md 확장자 생략 관용. 우리 entity 본체는 _index → 그대로.
+    if (p.endsWith('.md')) p = p.slice(0, -3);
+    return { kind: 'link', path: p };
+  }
+  if (/^[0-9A-HJKMNP-TV-Z]{26}$/.test(trimmed)) return { kind: 'id', value: trimmed };
+  return null;
 }
