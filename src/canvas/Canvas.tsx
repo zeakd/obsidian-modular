@@ -10,6 +10,7 @@ import {
   ReactFlow,
   Background,
   BackgroundVariant,
+  MiniMap,
   ReactFlowProvider,
   useReactFlow,
   useStore,
@@ -539,6 +540,14 @@ function CanvasInner({ store }: CanvasProps) {
         deleteKeyCode={null}
       >
         <Background variant={BackgroundVariant.Dots} gap={GRID * 2} size={1} color="rgba(0,0,0,0.08)" />
+        <MiniMap
+          pannable zoomable
+          nodeColor={(n) => (n.type === 'module' ? 'rgba(91,138,255,0.7)' : 'rgba(120,120,120,0.5)')}
+          nodeStrokeWidth={0}
+          maskColor="rgba(0,0,0,0.06)"
+          position="bottom-right"
+          ariaLabel="modular minimap"
+        />
       </ReactFlow>
 
       <Status
