@@ -508,3 +508,75 @@
   color: var(--text-muted);
   font-size: 10px;
 }
+
+/* ── PR-12: mobile summary tree ────────────────────────────────────────── */
+.modular-mobile-summary {
+  height: 100%;
+  overflow-y: auto;
+  padding: 12px 8px 32px;
+  font-family: var(--m-font-sans, inherit);
+  background: var(--background-primary);
+}
+.modular-mobile-header {
+  padding: 4px 10px 10px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+.modular-mobile-title {
+  font-size: 14.5px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+.modular-mobile-stats {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.modular-mobile-empty {
+  padding: 24px 12px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  text-align: center;
+}
+.modular-mobile-tree,
+.modular-mobile-children {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.modular-mobile-row { margin: 0; }
+.modular-mobile-row-btn {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 13px;
+  border-radius: 4px;
+  transition: background 100ms ease-out;
+}
+.modular-mobile-row-btn:active {
+  background: var(--background-modifier-hover);
+}
+.modular-mobile-kind {
+  color: var(--text-muted);
+  font-size: 11px;
+  flex-shrink: 0;
+  width: 12px;
+}
+.modular-mobile-name {
+  font-weight: 500;
+  flex-shrink: 0;
+}
+.modular-mobile-excerpt {
+  color: var(--text-muted);
+  font-size: 11.5px;
+  margin-left: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
