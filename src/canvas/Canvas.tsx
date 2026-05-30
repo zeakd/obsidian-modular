@@ -33,6 +33,7 @@ import { ModuleNode, type ModuleNodeData } from '../diagram/ModuleNode';
 import { ComponentNode, type ComponentNodeData } from '../diagram/ComponentNode';
 import { FloatingEdge } from '../diagram/FloatingEdge';
 import { confirmModal } from '../ui/confirm-modal';
+import { bodyEditModal } from '../ui/body-edit-modal';
 
 const nodeTypes = { module: ModuleNode, component: ComponentNode };
 const edgeTypes = { floating: FloatingEdge };
@@ -456,6 +457,13 @@ function CanvasInner({ store }: CanvasProps) {
     setSelectedId(node.id);
     store.openContextMenu(node.id, e as unknown as MouseEvent, {
       onRename: (id: EntityId) => setEditingId(id),
+      onEditBody: (id: EntityId) => {
+        const f = store.getEntityIndexFile(id);
+        if (!f) return;
+        const snap = wRef.current;
+        const ent = snap.entities.get(id);
+        void bodyEditModal(store.getApp(), f, ent?.name ?? id);
+      },
       onAddChild: (id: EntityId) => {
         const snap = wRef.current;
         const parent = snap.entities.get(id);

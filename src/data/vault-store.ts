@@ -583,11 +583,18 @@ export class VaultStore {
       onAddChild?: (parentId: EntityId) => void;
       onRename?: (id: EntityId) => void;
       onDelete?: (id: EntityId) => void;
+      onEditBody?: (id: EntityId) => void;
     },
   ): void {
     void nameFromFolderPath; // imported for re-export consumers; no-op here.
     const menu = new Menu();
 
+    if (callbacks.onEditBody) {
+      menu.addItem((item) => item
+        .setTitle('본문 편집')
+        .setIcon('edit-3')
+        .onClick(() => callbacks.onEditBody!(id)));
+    }
     if (callbacks.onAddChild) {
       menu.addItem((item) => item
         .setTitle('자식 추가')
@@ -616,6 +623,17 @@ export class VaultStore {
     }
 
     menu.showAtMouseEvent(event);
+  }
+
+  /**
+   * PR-10: 본문 편집용 _index.md TFile 반환 (vault.read 직접 호출하지 않고
+   * Modal 이 잡아 처리).
+   */
+  getEntityIndexFile(id: EntityId): TFile | null {
+    const folderPath = this.folderPathById.get(id);
+    if (!folderPath) return null;
+    const f = this.app.vault.getAbstractFileByPath(indexPathFromFolder(folderPath));
+    return f instanceof TFile ? f : null;
   }
 }
 
