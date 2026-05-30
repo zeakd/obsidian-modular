@@ -32,6 +32,7 @@ import type { Entity, EntityId, Workspace } from '../data/types';
 import { ModuleNode, type ModuleNodeData } from '../diagram/ModuleNode';
 import { ComponentNode, type ComponentNodeData } from '../diagram/ComponentNode';
 import { FloatingEdge } from '../diagram/FloatingEdge';
+import { confirmModal } from '../ui/confirm-modal';
 
 const nodeTypes = { module: ModuleNode, component: ComponentNode };
 const edgeTypes = { floating: FloatingEdge };
@@ -435,10 +436,19 @@ function CanvasInner({ store }: CanvasProps) {
         const hasChildren = [...snap.entities.values()].some((c) => c.parentId === id);
         const target = snap.entities.get(id);
         const label = target?.name ?? id;
-        // eslint-disable-next-line no-alert -- intentional native confirm pending Modal port
-        if (hasChildren && !confirm(`'${label}' 와 모든 자식을 삭제할까요? (폴더 통째로 사라집니다)`)) return;
-        void store.deleteEntity(id);
-        if (selectedIdRef.current === id) setSelectedId(null);
+        void (async () => {
+          if (hasChildren) {
+            const ok = await confirmModal(store.getApp(), {
+              title: '자식 entity 와 함께 삭제',
+              message: `'${label}' 와 그 안의 모든 자식이 폴더 통째로 사라집니다. 계속할까요?`,
+              confirmLabel: '삭제',
+              destructive: true,
+            });
+            if (!ok) return;
+          }
+          await store.deleteEntity(id);
+          if (selectedIdRef.current === id) setSelectedId(null);
+        })();
       },
     });
   }, [store]);
@@ -459,21 +469,30 @@ function CanvasInner({ store }: CanvasProps) {
         const sel = rf.getNodes().filter((n) => n.selected && n.id !== PENDING_ID);
         const selE = rf.getEdges().filter((ed) => ed.selected && !ed.id.startsWith('own:') && !ed.id.startsWith('agg:'));
         const snap = wRef.current;
-        for (const n of sel) {
-          const hasChildren = [...snap.entities.values()].some((c) => c.parentId === n.id);
-          const label = snap.entities.get(n.id)?.name ?? n.id;
-          // eslint-disable-next-line no-alert -- intentional native confirm pending Modal port
-          if (hasChildren && !confirm(`'${label}' 와 모든 자식을 삭제할까요? (폴더 통째로 사라집니다)`)) continue;
-          void store.deleteEntity(n.id);
-        }
-        for (const ed of selE) {
-          if (ed.id.startsWith('task:')) {
-            const rest = ed.id.slice('task:'.length);
-            const arrow = rest.indexOf('→');
-            if (arrow > 0) void store.removeComponentTask(rest.slice(0, arrow), rest.slice(arrow + 1));
+        void (async () => {
+          for (const n of sel) {
+            const hasChildren = [...snap.entities.values()].some((c) => c.parentId === n.id);
+            const label = snap.entities.get(n.id)?.name ?? n.id;
+            if (hasChildren) {
+              const ok = await confirmModal(store.getApp(), {
+                title: '자식 entity 와 함께 삭제',
+                message: `'${label}' 와 그 안의 모든 자식이 폴더 통째로 사라집니다. 계속할까요?`,
+                confirmLabel: '삭제',
+                destructive: true,
+              });
+              if (!ok) continue;
+            }
+            await store.deleteEntity(n.id);
           }
-        }
-        if (sel.length > 0) setSelectedId(null);
+          for (const ed of selE) {
+            if (ed.id.startsWith('task:')) {
+              const rest = ed.id.slice('task:'.length);
+              const arrow = rest.indexOf('→');
+              if (arrow > 0) await store.removeComponentTask(rest.slice(0, arrow), rest.slice(arrow + 1));
+            }
+          }
+          if (sel.length > 0) setSelectedId(null);
+        })();
       }
       if (e.key === 'Escape' && !inField) {
         if (pendingRef.current) setPending(null);

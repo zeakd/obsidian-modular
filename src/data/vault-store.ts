@@ -62,6 +62,9 @@ export class VaultStore {
     this.app = app;
   }
 
+  /** UI 레이어가 obsidian App API (Modal, Notice 등) 를 호출할 때 노출. */
+  getApp(): App { return this.app; }
+
   start(): void {
     void this.loadAllPositions().then(() => {
       if (this.pendingRebuild) this.pendingRebuild = false;
