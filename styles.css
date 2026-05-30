@@ -460,3 +460,51 @@
   color: var(--text-muted);
   margin-top: 2px;
 }
+
+/* ── PR-5: pinned inspector (right top) ────────────────────────────────── */
+.modular-canvas .cv-pinned {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  background: var(--background-primary);
+  border: 1px solid var(--m-hair, rgba(0,0,0,0.08));
+  border-radius: 8px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+  max-width: 220px;
+  z-index: 5;
+  pointer-events: auto;
+}
+.modular-canvas .cv-pinned-header {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  padding: 2px 6px 4px;
+  letter-spacing: 0.02em;
+}
+.modular-canvas .cv-pinned-row {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  transition: background 120ms ease-out;
+}
+.modular-canvas .cv-pinned-row:hover {
+  background: var(--background-modifier-hover);
+}
+.modular-canvas .cv-pinned-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.modular-canvas .cv-pinned-kind {
+  color: var(--text-muted);
+  font-size: 10px;
+}

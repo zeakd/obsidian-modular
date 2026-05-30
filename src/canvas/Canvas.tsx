@@ -550,6 +550,13 @@ function CanvasInner({ store }: CanvasProps) {
         />
       </ReactFlow>
 
+      <PinnedInspector store={store} byId={byId} onJump={(id) => {
+        const ent = byId.get(id);
+        if (!ent) return;
+        void rf.setCenter(ent.position.x + MODULE_W_EST / 2, ent.position.y + 30, { zoom: 1.2, duration: 360 });
+        setSelectedId(id);
+      }} />
+
       <Status
         moduleCount={modules.length}
         componentCount={components.length}
@@ -558,6 +565,32 @@ function CanvasInner({ store }: CanvasProps) {
         canOpenInLeaf={selectedId !== null && selectedId !== PENDING_ID}
       />
       {modules.length === 0 && !pending && <EmptyHint />}
+    </div>
+  );
+}
+
+function PinnedInspector({
+  store,
+  byId,
+  onJump,
+}: {
+  store: VaultStore;
+  byId: Map<EntityId, Entity>;
+  onJump: (id: EntityId) => void;
+}) {
+  // re-render when store emits (pin toggle changes the snapshot identity).
+  useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
+  const pinned = store.getPinnedIds().map((id) => byId.get(id)).filter((e): e is Entity => !!e);
+  if (pinned.length === 0) return null;
+  return (
+    <div className="cv-pinned" role="complementary" aria-label="pinned entities">
+      <div className="cv-pinned-header">📌 Pinned</div>
+      {pinned.map((e) => (
+        <button key={e.id} type="button" className="cv-pinned-row" onClick={() => onJump(e.id)} title={e.folderPath}>
+          <span className="cv-pinned-name">{e.name}</span>
+          <span className="cv-pinned-kind">{e.kind === 'module' ? '◇' : '·'}</span>
+        </button>
+      ))}
     </div>
   );
 }

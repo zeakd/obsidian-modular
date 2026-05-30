@@ -54,6 +54,8 @@ export class VaultStore {
   private idByFolderPath = new Map<string, EntityId>();
   /** id → cached body excerpt (frontmatter 제거된 첫 ~400자). 비동기로 채움. */
   private bodyExcerptById = new Map<EntityId, string>();
+  /** PR-5: 사용자가 pin 한 entity ids — Canvas 우측 inspector panel 에 표시. */
+  private pinnedIds = new Set<EntityId>();
   private sideLeaf: WorkspaceLeaf | null = null;
 
   constructor(app: App) {
@@ -161,6 +163,16 @@ export class VaultStore {
   };
   getSnapshot = (): Workspace => this.snapshot;
   private emit(): void { for (const fn of this.listeners) fn(); }
+
+  // ── pin (PR-5) ─────────────────────────────────────────────────────────
+
+  togglePin(id: EntityId): void {
+    if (this.pinnedIds.has(id)) this.pinnedIds.delete(id);
+    else this.pinnedIds.add(id);
+    this.emit();
+  }
+  isPinned(id: EntityId): boolean { return this.pinnedIds.has(id); }
+  getPinnedIds(): EntityId[] { return [...this.pinnedIds]; }
 
   private requestRebuild(): void {
     if (!this.positionsLoaded) { this.pendingRebuild = true; return; }
@@ -476,6 +488,11 @@ export class VaultStore {
         .setIcon('pencil')
         .onClick(() => callbacks.onRename!(id)));
     }
+
+    menu.addItem((item) => item
+      .setTitle(this.isPinned(id) ? '핀 해제' : '핀 고정')
+      .setIcon('pin')
+      .onClick(() => this.togglePin(id)));
 
     menu.addSeparator();
 
