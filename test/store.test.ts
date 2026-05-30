@@ -162,7 +162,10 @@ test('addComponentTask records id reference in frontmatter and snapshot', async 
 
   const f = app.vault.getAbstractFileByPath('modular/m/a/_index.md');
   const fm = app.metadataCache.getFileCache(f)?.frontmatter;
-  expect(fm?.['modular-tasks']).toEqual([c2]);
+  // PR-9: frontmatter 는 wiki-link 형식 (graph view 통합). store snapshot
+  // 은 그대로 id 기반 (toId: c2).
+  expect(fm?.['modular-tasks']).toEqual(['[[modular/m/b/_index|b]]']);
+  void c2; // referenced in snapshot expectation above
 });
 
 test('removeComponentTask deletes the outgoing entry', async () => {
@@ -214,10 +217,11 @@ test('task to a deleted target is dropped from snapshot', async () => {
   await store.deleteEntity(c2);
   await waitTicks();
   expect(store.getSnapshot().tasks).toEqual([]);
-  // frontmatter on c1 still has the stale id but snapshot filters it.
+  // frontmatter on c1 still has the stale wiki-link but snapshot filters it.
   const f = app.vault.getAbstractFileByPath('modular/m/a/_index.md');
   const fm = app.metadataCache.getFileCache(f)?.frontmatter;
-  expect(fm?.['modular-tasks']).toEqual([c2]);
+  expect(fm?.['modular-tasks']).toEqual(['[[modular/m/b/_index|b]]']);
+  void c2;
 });
 
 test('non-_index.md files in modular/ are ignored', async () => {

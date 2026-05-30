@@ -10,6 +10,7 @@ import {
   entityFromIndex,
   newComponentIndexBody,
   newModuleIndexBody,
+  parseTaskRef,
   setOutgoingTasks,
 } from './frontmatter';
 import {
@@ -331,9 +332,28 @@ export class VaultStore {
       const tasks: unknown = fm?.['modular-tasks'];
       if (Array.isArray(tasks)) {
         for (const t of tasks) {
-          if (typeof t === 'string' && t.length > 0) tasksRaw.push({ fromId: id, toId: t });
+          const ref = parseTaskRef(t);
+          if (!ref) continue;
+          // wiki link → resolve later (path 까지 알아야 하니 두 번째 pass).
+          // id → 바로 use.
+          if (ref.kind === 'id') {
+            tasksRaw.push({ fromId: id, toId: ref.value });
+          } else {
+            // path → folderPath 매핑은 모든 entity index 끝난 후.
+            tasksRaw.push({ fromId: id, toId: `__link__:${ref.path}` });
+          }
         }
       }
+    }
+    // Resolve wiki-link refs (path → folderPath → id via idByFolderPath).
+    for (let i = 0; i < tasksRaw.length; i++) {
+      const r = tasksRaw[i];
+      if (!r.toId.startsWith('__link__:')) continue;
+      const linkPath = r.toId.slice('__link__:'.length);
+      // link path 는 `<folder>/_index` 형식. folder 추출 → id 조회.
+      const folder = linkPath.endsWith('/_index') ? linkPath.slice(0, -'/_index'.length) : linkPath;
+      const resolved = this.idByFolderPath.get(folder);
+      tasksRaw[i] = { fromId: r.fromId, toId: resolved ?? '' };
     }
     // Drop excerpts for deleted entities.
     for (const id of [...this.bodyExcerptById.keys()]) {
@@ -353,11 +373,11 @@ export class VaultStore {
       })).then(() => this.rebuild());
     }
 
-    // Filter tasks: both endpoints must exist + dedup.
+    // Filter tasks: both endpoints must exist + dedup. Drop unresolved link refs (toId === '').
     const seen = new Set<string>();
     const tasks: Task[] = [];
     for (const t of tasksRaw) {
-      if (!entities.has(t.fromId) || !entities.has(t.toId)) continue;
+      if (!t.toId || !entities.has(t.fromId) || !entities.has(t.toId)) continue;
       const key = `${t.fromId}|${t.toId}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -450,19 +470,31 @@ export class VaultStore {
     });
   }
 
+  /** Resolve current outgoing task ids by walking the snapshot's tasks list. */
+  private currentOutgoingIds(fromId: EntityId): EntityId[] {
+    return this.snapshot.tasks.filter((t) => t.fromId === fromId).map((t) => t.toId);
+  }
+
+  /** Build wiki-link refs from a list of target ids. */
+  private refsForIds(ids: EntityId[]): Array<{ id: EntityId; folderPath: string; name: string }> {
+    const out: Array<{ id: EntityId; folderPath: string; name: string }> = [];
+    for (const id of ids) {
+      const e = this.snapshot.entities.get(id);
+      if (!e) continue;
+      out.push({ id, folderPath: e.folderPath, name: e.name });
+    }
+    return out;
+  }
+
   async addComponentTask(fromId: EntityId, toId: EntityId): Promise<void> {
     if (fromId === toId) return;
     const folderPath = this.folderPathById.get(fromId);
     if (!folderPath) return;
     const f = this.app.vault.getAbstractFileByPath(indexPathFromFolder(folderPath));
     if (!(f instanceof TFile)) return;
-    const fm = this.app.metadataCache.getFileCache(f)?.frontmatter;
-    const tasks: unknown = fm?.['modular-tasks'];
-    const existing = Array.isArray(tasks)
-      ? (tasks as unknown[]).filter((s): s is string => typeof s === 'string')
-      : [];
+    const existing = this.currentOutgoingIds(fromId);
     if (existing.includes(toId)) return;
-    await setOutgoingTasks(this.app, f, [...existing, toId]);
+    await setOutgoingTasks(this.app, f, this.refsForIds([...existing, toId]));
   }
 
   async removeComponentTask(fromId: EntityId, toId: EntityId): Promise<void> {
@@ -470,14 +502,10 @@ export class VaultStore {
     if (!folderPath) return;
     const f = this.app.vault.getAbstractFileByPath(indexPathFromFolder(folderPath));
     if (!(f instanceof TFile)) return;
-    const fm = this.app.metadataCache.getFileCache(f)?.frontmatter;
-    const tasks: unknown = fm?.['modular-tasks'];
-    const existing = Array.isArray(tasks)
-      ? (tasks as unknown[]).filter((s): s is string => typeof s === 'string')
-      : [];
+    const existing = this.currentOutgoingIds(fromId);
     const next = existing.filter((p) => p !== toId);
     if (next.length === existing.length) return;
-    await setOutgoingTasks(this.app, f, next);
+    await setOutgoingTasks(this.app, f, this.refsForIds(next));
   }
 
   // ── side-leaf navigation ────────────────────────────────────────────────
