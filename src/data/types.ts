@@ -21,6 +21,11 @@ export interface Entity {
   kind: 'module' | 'component';
   /** module 만 사용 (v1 호환). */
   tags?: string[];
+  /**
+   * markdown body 의 첫 부분 (frontmatter 제거 후 ~400자). 노드에 표시할
+   * 미리보기. 빈 entity 면 빈 문자열. async 로 채워지고 못 읽었으면 undefined.
+   */
+  bodyExcerpt?: string;
 }
 
 export interface Task {

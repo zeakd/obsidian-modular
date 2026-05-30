@@ -351,3 +351,24 @@
   position: absolute;
   inset: 0;
 }
+
+/* ── PR-1: body excerpt (zoom-density) ─────────────────────────────────── */
+.modular-canvas .mn-body-excerpt,
+.modular-canvas .cn-body-excerpt {
+  font-family: var(--m-font-sans, inherit);
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--m-ink-soft, var(--text-muted));
+  margin-top: 6px;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre-wrap;
+  word-break: break-word;
+  /* -webkit-line-clamp set inline per zoom */
+}
+.modular-canvas .cn-body-excerpt {
+  font-size: 10.5px;
+  margin-top: 4px;
+}
