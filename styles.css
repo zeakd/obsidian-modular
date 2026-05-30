@@ -383,3 +383,68 @@
     0 0 calc(var(--m-freshness, 0) * 18px) calc(var(--m-freshness, 0) * 6px)
       rgba(var(--accent-rgb, 91 138 255), calc(var(--m-freshness, 0) * 0.45));
 }
+
+/* ── PR-3: visual design polish ───────────────────────────────────────── */
+
+/* Smoother node corners + transition for drag/hover/zoom-density */
+.modular-canvas .mn,
+.modular-canvas .cn {
+  border-radius: 10px;
+  transition:
+    box-shadow 180ms ease-out,
+    border-color 120ms ease-out,
+    transform 140ms cubic-bezier(0.34, 1.56, 0.64, 1);  /* tiny spring on select */
+  will-change: transform;
+}
+
+/* Subtle scale lift on select — affirm "this one is active" */
+.modular-canvas .mn-selected,
+.modular-canvas .cn-selected {
+  transform: translateY(-1px);
+}
+
+/* Kind tinting — module gets a softly stronger accent stripe;
+   component stays restrained so the hierarchy reads at a glance. */
+.modular-canvas .mn .mn-stripe {
+  background: linear-gradient(
+    180deg,
+    rgba(var(--accent-rgb, 91 138 255), 0.85) 0%,
+    rgba(var(--accent-rgb, 91 138 255), 0.55) 100%
+  );
+}
+
+/* Edge motion — connect / reconnect fade-in */
+.modular-canvas .react-flow__edge {
+  transition: opacity 160ms ease-out;
+}
+.modular-canvas .react-flow__edge.animated {
+  animation: m-edge-fade 180ms ease-out;
+}
+@keyframes m-edge-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* Handle micro-interaction — hover/active gentle pulse */
+.modular-canvas .react-flow__handle {
+  transition: transform 120ms ease-out, background 120ms ease-out;
+}
+.modular-canvas .react-flow__handle:hover {
+  transform: scale(1.4);
+}
+
+/* Typography — tighten leading on name, soften body */
+.modular-canvas .mn-name,
+.modular-canvas .cn-name {
+  letter-spacing: -0.005em;
+  font-feature-settings: "ss01", "calt";
+}
+
+/* Empty state — softer fade-in (replaces sudden appearance after delete) */
+.modular-canvas .cv-empty {
+  animation: m-empty-fade 240ms ease-out;
+}
+@keyframes m-empty-fade {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
