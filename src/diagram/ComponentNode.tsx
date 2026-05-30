@@ -8,6 +8,7 @@ export interface ComponentNodeData extends Record<string, unknown> {
   name: string;
   editing: boolean;
   bodyExcerpt?: string;
+  freshness?: number;
   onCommitName: (next: string) => void;
   onCancelName: () => void;
 }
@@ -16,7 +17,7 @@ export interface ComponentNodeData extends Record<string, unknown> {
 export type ComponentNodeType = Node<ComponentNodeData, 'component'>;
 
 export function ComponentNode({ data, selected }: NodeProps<ComponentNodeType>) {
-  const { editing, name, bodyExcerpt, onCommitName, onCancelName } = data;
+  const { editing, name, bodyExcerpt, freshness, onCommitName, onCancelName } = data;
   const zoom = useStore((s: ReactFlowState) => s.transform[2]);
   const showBody = zoom >= 1.0 && !!bodyExcerpt;
   const bodyLines = zoom >= 1.5 ? 4 : 2;
@@ -59,7 +60,10 @@ export function ComponentNode({ data, selected }: NodeProps<ComponentNodeType>) 
   const cancel = () => { setValue(name); onCancelName(); };
 
   return (
-    <div className={`cn ${selected ? 'cn-selected' : ''} ${editing ? 'cn-editing' : ''}`}>
+    <div
+      className={`cn ${selected ? 'cn-selected' : ''} ${editing ? 'cn-editing' : ''}`}
+      style={freshness && freshness > 0 ? { ['--m-freshness' as never]: freshness.toFixed(3) } : undefined}
+    >
       <Handle id="l" type="source" position={Position.Left} className="cn-handle" />
       <Handle id="r" type="source" position={Position.Right} className="cn-handle" />
       <Handle id="t" type="source" position={Position.Top} className="cn-handle" />
