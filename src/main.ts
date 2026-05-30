@@ -1,10 +1,11 @@
 // Modular plugin entry. Lifecycle log goes to `_modular-debug.log` in the
 // vault root so a remote AI can see where load broke without DevTools.
 
-import { Plugin, Notice, WorkspaceLeaf } from 'obsidian';
+import { App, Plugin, Notice, SuggestModal, WorkspaceLeaf } from 'obsidian';
 import { VaultDebugLog } from 'obsidian-plugin-kit/runtime';
 import { ModularView, VIEW_TYPE_MODULAR } from './view/ModularView';
 import { VaultStore } from './data/vault-store';
+import type { Entity, EntityId } from './data/types';
 
 export default class ModularPlugin extends Plugin {
   private store: VaultStore | null = null;
@@ -45,6 +46,13 @@ export default class ModularPlugin extends Plugin {
         callback: () => { void this.showDebugLog(); },
       });
 
+      // PR-4: entity 검색 — vault-store snapshot 의 entities 를 quick switcher 스타일로.
+      this.addCommand({
+        id: 'find-entity',
+        name: 'Find entity',
+        callback: () => { void this.openFindEntity(); },
+      });
+
       await this.log.write('─── onload complete ───');
       new Notice('Modular loaded', 3000);
     } catch (err) {
@@ -78,6 +86,18 @@ export default class ModularPlugin extends Plugin {
     }
   }
 
+  private async openFindEntity(): Promise<void> {
+    if (!this.store) return;
+    const entities = [...this.store.getSnapshot().entities.values()];
+    new FindEntityModal(this.app, entities, async (id: EntityId) => {
+      if (!this.store) return;
+      // 1. activate Canvas (ensure view exists + focus)
+      await this.activateView();
+      // 2. open _index.md in side leaf (cheap; same as node click)
+      await this.store.openInSideLeaf(id);
+    }).open();
+  }
+
   private async activateView(): Promise<void> {
     const ws = this.app.workspace;
     const leaves = ws.getLeavesOfType(VIEW_TYPE_MODULAR);
@@ -87,5 +107,37 @@ export default class ModularPlugin extends Plugin {
       await leaf.setViewState({ type: VIEW_TYPE_MODULAR, active: true });
     }
     await ws.revealLeaf(leaf);
+  }
+}
+
+class FindEntityModal extends SuggestModal<Entity> {
+  private entities: Entity[];
+  private onPick: (id: EntityId) => void | Promise<void>;
+  constructor(app: App, entities: Entity[], onPick: (id: EntityId) => void | Promise<void>) {
+    super(app);
+    this.entities = entities;
+    this.onPick = onPick;
+    this.setPlaceholder('Find modular entity…');
+  }
+  getSuggestions(query: string): Entity[] {
+    const q = query.trim().toLowerCase();
+    if (!q) {
+      // No query → recently modified first.
+      return [...this.entities].sort((a, b) => (b.modifiedMs ?? 0) - (a.modifiedMs ?? 0));
+    }
+    const filtered = this.entities.filter((e) => e.name.toLowerCase().includes(q));
+    // Module first, then alphabetical.
+    return filtered.sort((a, b) => {
+      if (a.kind !== b.kind) return a.kind === 'module' ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+  }
+  renderSuggestion(e: Entity, el: HTMLElement): void {
+    el.createDiv({ text: e.name, cls: 'modular-suggest-name' });
+    const sub = el.createDiv({ cls: 'modular-suggest-sub' });
+    sub.setText(`${e.kind === 'module' ? '◇' : '·'} ${e.folderPath}`);
+  }
+  onChooseSuggestion(e: Entity): void {
+    void this.onPick(e.id);
   }
 }
