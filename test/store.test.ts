@@ -1,24 +1,19 @@
-// First L1 behavior test for modular — exercises VaultStore against
-// obsidian-sim's VaultSim + MetadataSim. No Obsidian launch required.
+// L1 behavior test — VaultStore v2 (conventions E, id-based).
 //
-// Coverage so far:
-//   - createModule writes the expected folder + md file with the convention
-//     `modular/<name>/<name>.md` and a default frontmatter body.
-//   - The store's snapshot reflects the new module once vault events have
-//     flushed.
-//   - createChildComponent inside an expanded module creates the
-//     `modular/<m>/<c>/<c>.md` nested path and lands as a component in the
-//     snapshot with parentPath pointing at the module.
+// Coverage:
+//   - createModule → `modular/<name>/_index.md` + sidecar + id in frontmatter
+//   - createChildComponent → nested `<parent>/<child>/_index.md` + parent id link
+//   - snapshot reflects entities + tasks indexed by id
+//   - rename = folder rename (id stays, path moves)
+//   - delete = folder trash + cache cleanup
+//   - tasks add/remove operate on ids, persist as id arrays in frontmatter
+//   - external markdown edit reloads cache
 
 import { test, expect } from 'vitest';
 import { installObsidianHook } from 'obsidian-sim/install';
 import { makeApp } from 'obsidian-sim/sim';
 
-// Route any `require('obsidian')` deeper in the dependency graph (the bundled
-// modular code does this) to obsidian-sim's mock.
 installObsidianHook();
-
-// Lazy import so the require hook above is in place before module-eval.
 const { VaultStore } = await import('../src/data/vault-store');
 
 function freshStore() {
@@ -27,11 +22,16 @@ function freshStore() {
   return { app, store };
 }
 
-// Bumped from 5 → 12 after the sim adopted an AsyncQueue (kit PR A):
-// mutations chain through a Promise tail and even adapter-level loops in
-// modular's loadAllPositions need more microtask hops to settle.
 async function waitTicks(n = 12): Promise<void> {
   for (let i = 0; i < n; i++) await Promise.resolve();
+}
+
+function entityByName(store: any, name: string) {
+  const snap = store.getSnapshot();
+  for (const e of snap.entities.values()) {
+    if (e.name === name) return e;
+  }
+  return null;
 }
 
 test('start() on an empty vault produces an empty snapshot', async () => {
@@ -39,170 +39,128 @@ test('start() on an empty vault produces an empty snapshot', async () => {
   store.start();
   await waitTicks();
   const snap = store.getSnapshot();
-  expect(snap.modules).toEqual([]);
-  expect(snap.components).toEqual([]);
+  expect(snap.entities.size).toBe(0);
+  expect(snap.tasks).toEqual([]);
 });
 
-test('createModule writes modular/<name>/<name>.md and snapshot reflects it', async () => {
+test('createModule writes modular/<name>/_index.md with frontmatter id', async () => {
   const { app, store } = freshStore();
   store.start();
   await waitTicks();
+  const id = await store.createModule('payments', { x: 100, y: 200 });
+  expect(typeof id).toBe('string');
+  expect(id!.length).toBe(26);
 
-  const path = await store.createModule('payments', { x: 100, y: 200 });
-  expect(path).toBe('modular/payments/payments.md');
-
-  // Module file exists with the new-module frontmatter body.
-  const file = app.vault.getAbstractFileByPath('modular/payments/payments.md');
-  expect(file).toBeTruthy();
-  const body = await app.vault.read(file);
+  // Files on disk
+  const indexFile = app.vault.getAbstractFileByPath('modular/payments/_index.md');
+  expect(indexFile).toBeTruthy();
+  const body = await app.vault.read(indexFile);
+  expect(body).toContain(`modular-id: ${id}`);
   expect(body).toContain('modular-tags: []');
 
   await waitTicks();
-  const snap = store.getSnapshot();
-  expect(snap.modules).toHaveLength(1);
-  expect(snap.modules[0].path).toBe(path);
-  expect(snap.modules[0].name).toBe('payments');
-  expect(snap.modules[0].position).toEqual({ x: 100, y: 200 });
-  expect(snap.components).toEqual([]);
+  const ent = entityByName(store, 'payments');
+  expect(ent).toBeTruthy();
+  expect(ent.id).toBe(id);
+  expect(ent.kind).toBe('module');
+  expect(ent.parentId).toBeNull();
+  expect(ent.position).toEqual({ x: 100, y: 200 });
 });
 
-test('createChildComponent inside an expanded module appears as component', async () => {
+test('createChildComponent nests under parent and records modular-parent', async () => {
   const { app, store } = freshStore();
   store.start();
   await waitTicks();
-
-  const modPath = await store.createModule('billing', { x: 0, y: 0 });
+  const parentId = await store.createModule('billing', { x: 0, y: 0 });
   await waitTicks();
-  const compPath = await store.createChildComponent(modPath, 'invoice', { x: 50, y: 60 });
-  expect(compPath).toBe('modular/billing/invoice/invoice.md');
+  const childId = await store.createChildComponent(parentId, 'invoice', { x: 50, y: 60 });
+  expect(typeof childId).toBe('string');
 
-  // Folder + md both exist.
-  expect(app.vault.getAbstractFileByPath('modular/billing/invoice')).toBeTruthy();
-  expect(app.vault.getAbstractFileByPath('modular/billing/invoice/invoice.md')).toBeTruthy();
+  expect(app.vault.getAbstractFileByPath('modular/billing/invoice/_index.md')).toBeTruthy();
+  const body = await app.vault.read(app.vault.getAbstractFileByPath('modular/billing/invoice/_index.md'));
+  expect(body).toContain(`modular-id: ${childId}`);
+  expect(body).toContain(`modular-parent: ${parentId}`);
 
   await waitTicks();
-  const snap = store.getSnapshot();
-  expect(snap.modules.map((m: any) => m.name)).toEqual(['billing']);
-  expect(snap.components).toHaveLength(1);
-  expect(snap.components[0].path).toBe(compPath);
-  expect(snap.components[0].name).toBe('invoice');
-  expect(snap.components[0].parentPath).toBe(modPath);
-  expect(snap.components[0].position).toEqual({ x: 50, y: 60 });
+  const child = entityByName(store, 'invoice');
+  expect(child.kind).toBe('component');
+  expect(child.parentId).toBe(parentId);
+  expect(child.position).toEqual({ x: 50, y: 60 });
 });
 
-test('deleteEntity on a leaf removes it from snapshot', async () => {
+test('deleteEntity on a module removes it from snapshot + trashes folder', async () => {
   const { app, store } = freshStore();
   store.start();
   await waitTicks();
-  const modPath = await store.createModule('temp', { x: 0, y: 0 });
+  const id = await store.createModule('temp', { x: 0, y: 0 });
   await waitTicks();
-  expect(store.getSnapshot().modules).toHaveLength(1);
-  await store.deleteEntity(modPath);
+  expect(store.getSnapshot().entities.size).toBe(1);
+  await store.deleteEntity(id);
   await waitTicks();
-  expect(store.getSnapshot().modules).toEqual([]);
+  expect(store.getSnapshot().entities.size).toBe(0);
+  expect(app.vault.getAbstractFileByPath('modular/temp')).toBeFalsy();
 });
 
-test('deleteEntity on expanded module removes folder + children', async () => {
+test('deleteEntity on an entity with children removes folder + descendants', async () => {
   const { app, store } = freshStore();
   store.start();
   await waitTicks();
-  const modPath = await store.createModule('payments', { x: 0, y: 0 });
+  const modId = await store.createModule('payments', { x: 0, y: 0 });
   await waitTicks();
-  await store.createChildComponent(modPath, 'refund', { x: 10, y: 10 });
-  await store.createChildComponent(modPath, 'paywall', { x: 20, y: 20 });
+  await store.createChildComponent(modId, 'refund', { x: 10, y: 10 });
+  await store.createChildComponent(modId, 'paywall', { x: 20, y: 20 });
   await waitTicks();
-  expect(store.getSnapshot().modules).toHaveLength(1);
-  expect(store.getSnapshot().components).toHaveLength(2);
+  expect(store.getSnapshot().entities.size).toBe(3);
 
-  await store.deleteEntity(modPath);
+  await store.deleteEntity(modId);
   await waitTicks();
-  expect(store.getSnapshot().modules).toEqual([]);
-  expect(store.getSnapshot().components).toEqual([]);
-  // folder + child files all gone
+  expect(store.getSnapshot().entities.size).toBe(0);
   expect(app.vault.getAbstractFileByPath('modular/payments')).toBeFalsy();
-  expect(app.vault.getAbstractFileByPath('modular/payments/refund/refund.md')).toBeFalsy();
 });
 
-test('renameEntity on expanded module renames folder + md + child paths', async () => {
+test('renameEntity preserves id, moves folder, snapshot updates name', async () => {
   const { app, store } = freshStore();
   store.start();
   await waitTicks();
-  const oldModPath = await store.createModule('billing', { x: 0, y: 0 });
+  const modId = await store.createModule('billing', { x: 0, y: 0 });
   await waitTicks();
-  await store.createChildComponent(oldModPath, 'invoice', { x: 10, y: 10 });
-  await waitTicks();
-
-  const newModPath = await store.renameEntity(oldModPath, 'payments');
-  expect(newModPath).toBe('modular/payments/payments.md');
+  await store.createChildComponent(modId, 'invoice', { x: 0, y: 0 });
   await waitTicks();
 
-  // 새 path 들 모두 존재
-  expect(app.vault.getAbstractFileByPath('modular/payments/payments.md')).toBeTruthy();
-  expect(app.vault.getAbstractFileByPath('modular/payments/invoice/invoice.md')).toBeTruthy();
-  // 옛 path 모두 사라짐
-  expect(app.vault.getAbstractFileByPath('modular/billing/billing.md')).toBeFalsy();
-  expect(app.vault.getAbstractFileByPath('modular/billing/invoice/invoice.md')).toBeFalsy();
+  const result = await store.renameEntity(modId, 'payments');
+  expect(result).toBe(modId);
+  await waitTicks();
 
-  // snapshot 의 자식도 새 parent path
+  // new paths exist, old gone
+  expect(app.vault.getAbstractFileByPath('modular/payments/_index.md')).toBeTruthy();
+  expect(app.vault.getAbstractFileByPath('modular/payments/invoice/_index.md')).toBeTruthy();
+  expect(app.vault.getAbstractFileByPath('modular/billing')).toBeFalsy();
+
+  // snapshot still indexed by id; name reflects new folder
   const snap = store.getSnapshot();
-  expect(snap.modules.map((m: any) => m.path)).toEqual(['modular/payments/payments.md']);
-  expect(snap.components[0].parentPath).toBe('modular/payments/payments.md');
+  expect(snap.entities.get(modId)?.name).toBe('payments');
+  // child's parentId still refers to original modId
+  const child = entityByName(store, 'invoice');
+  expect(child.parentId).toBe(modId);
 });
 
-test('createChildComponent promotes a leaf parent to expanded', async () => {
+test('addComponentTask records id reference in frontmatter and snapshot', async () => {
   const { app, store } = freshStore();
   store.start();
   await waitTicks();
-
-  // module 만들고, 그 안에 component 를 *leaf* 형태로 손으로 추가하면 promote 트리거.
-  // 단순 시뮬레이션 — createChildComponent 가 항상 expanded 로 만들지만,
-  // promote 시나리오는 'leaf 가 이미 존재하는 vault' 에서 자식 추가 시.
-  const modPath = await store.createModule('app', { x: 0, y: 0 });
+  const modId = await store.createModule('m', { x: 0, y: 0 });
   await waitTicks();
-  // 직접 leaf 파일 박기 (사용자가 explorer 에서 만든 것 모사)
-  await app.vault.create('modular/app/widget.md', '---\nmodular-tasks: []\n---\n\n');
+  const c1 = await store.createChildComponent(modId, 'a', { x: 0, y: 0 });
+  const c2 = await store.createChildComponent(modId, 'b', { x: 0, y: 0 });
   await waitTicks();
-
-  // 이 시점에서 widget 은 leaf component. 자식 추가 시 promote.
-  const leafPath = 'modular/app/widget.md';
-  const subPath = await store.createChildComponent(leafPath, 'detail', { x: 0, y: 0 });
-  expect(subPath).toBe('modular/app/widget/detail/detail.md');
-  await waitTicks();
-
-  // 옛 leaf 가 이동됐는지
-  expect(app.vault.getAbstractFileByPath('modular/app/widget.md')).toBeFalsy();
-  expect(app.vault.getAbstractFileByPath('modular/app/widget/widget.md')).toBeTruthy();
-  expect(app.vault.getAbstractFileByPath('modular/app/widget/detail/detail.md')).toBeTruthy();
-
-  // snapshot 의 부모 관계
-  const snap = store.getSnapshot();
-  const widget = snap.components.find((c: any) => c.name === 'widget');
-  const detail = snap.components.find((c: any) => c.name === 'detail');
-  expect(widget?.parentPath).toBe('modular/app/app.md');
-  expect(detail?.parentPath).toBe('modular/app/widget/widget.md');
-});
-
-test('addComponentTask records outgoing task in frontmatter and snapshot', async () => {
-  const { app, store } = freshStore();
-  store.start();
-  await waitTicks();
-  const mod = await store.createModule('m', { x: 0, y: 0 });
-  await waitTicks();
-  const c1 = await store.createChildComponent(mod, 'a', { x: 0, y: 0 });
-  const c2 = await store.createChildComponent(mod, 'b', { x: 0, y: 0 });
-  await waitTicks();
-
   await store.addComponentTask(c1, c2);
   await waitTicks();
 
-  // snapshot 에 task 등장
   const snap = store.getSnapshot();
-  expect(snap.componentTasks).toHaveLength(1);
-  expect(snap.componentTasks[0].fromPath).toBe(c1);
-  expect(snap.componentTasks[0].toPath).toBe(c2);
+  expect(snap.tasks).toHaveLength(1);
+  expect(snap.tasks[0]).toEqual({ fromId: c1, toId: c2 });
 
-  // frontmatter 에 outgoing 기록
-  const f = app.vault.getAbstractFileByPath(c1);
+  const f = app.vault.getAbstractFileByPath('modular/m/a/_index.md');
   const fm = app.metadataCache.getFileCache(f)?.frontmatter;
   expect(fm?.['modular-tasks']).toEqual([c2]);
 });
@@ -211,122 +169,64 @@ test('removeComponentTask deletes the outgoing entry', async () => {
   const { app, store } = freshStore();
   store.start();
   await waitTicks();
-  const mod = await store.createModule('m', { x: 0, y: 0 });
+  const modId = await store.createModule('m', { x: 0, y: 0 });
   await waitTicks();
-  const c1 = await store.createChildComponent(mod, 'a', { x: 0, y: 0 });
-  const c2 = await store.createChildComponent(mod, 'b', { x: 0, y: 0 });
+  const c1 = await store.createChildComponent(modId, 'a', { x: 0, y: 0 });
+  const c2 = await store.createChildComponent(modId, 'b', { x: 0, y: 0 });
   await waitTicks();
   await store.addComponentTask(c1, c2);
   await waitTicks();
-
   await store.removeComponentTask(c1, c2);
   await waitTicks();
 
-  const snap = store.getSnapshot();
-  expect(snap.componentTasks).toEqual([]);
-  const f = app.vault.getAbstractFileByPath(c1);
+  expect(store.getSnapshot().tasks).toEqual([]);
+  const f = app.vault.getAbstractFileByPath('modular/m/a/_index.md');
   const fm = app.metadataCache.getFileCache(f)?.frontmatter;
   expect(fm?.['modular-tasks']).toEqual([]);
 });
 
-test('updateEntityPosition writes entity .position sidecar', async () => {
+test('updateEntityPosition writes <folder>/.position sidecar', async () => {
   const { app, store } = freshStore();
   store.start();
   await waitTicks();
-  const mod = await store.createModule('p', { x: 100, y: 100 });
+  const id = await store.createModule('p', { x: 1, y: 2 });
   await waitTicks();
-
-  await store.updateEntityPosition(mod, { x: 555, y: 666 });
+  await store.updateEntityPosition(id, { x: 99, y: 100 });
   await waitTicks();
-
-  const snap = store.getSnapshot();
-  expect(snap.modules[0].position).toEqual({ x: 555, y: 666 });
-
-  // expanded module 의 sidecar 는 그 폴더 안 .position
-  const raw = await app.vault.adapter.read('modular/p/.position');
-  const pos = JSON.parse(raw);
-  expect(pos).toEqual({ x: 555, y: 666 });
-
-  // 옛 단일 파일 안 생김
-  expect(await app.vault.adapter.exists('modular/.positions.json')).toBe(false);
+  const sidecar = await app.vault.adapter.read('modular/p/.position');
+  expect(JSON.parse(sidecar)).toEqual({ x: 99, y: 100 });
+  expect(store.getSnapshot().entities.get(id)?.position).toEqual({ x: 99, y: 100 });
 });
 
-test('createChildComponent writes child .position in child folder', async () => {
+test('task to a deleted target is dropped from snapshot', async () => {
   const { app, store } = freshStore();
   store.start();
   await waitTicks();
-  const mod = await store.createModule('app', { x: 0, y: 0 });
+  const modId = await store.createModule('m', { x: 0, y: 0 });
   await waitTicks();
-  const comp = await store.createChildComponent(mod, 'widget', { x: 50, y: 60 });
+  const c1 = await store.createChildComponent(modId, 'a', { x: 0, y: 0 });
+  const c2 = await store.createChildComponent(modId, 'b', { x: 0, y: 0 });
+  await waitTicks();
+  await store.addComponentTask(c1, c2);
   await waitTicks();
 
-  // child 가 expanded 라 sidecar 는 그 자식 폴더 안 .position
-  expect(comp).toBe('modular/app/widget/widget.md');
-  const raw = await app.vault.adapter.read('modular/app/widget/.position');
-  expect(JSON.parse(raw)).toEqual({ x: 50, y: 60 });
+  // Delete target c2; task should vanish from snapshot.
+  await store.deleteEntity(c2);
+  await waitTicks();
+  expect(store.getSnapshot().tasks).toEqual([]);
+  // frontmatter on c1 still has the stale id but snapshot filters it.
+  const f = app.vault.getAbstractFileByPath('modular/m/a/_index.md');
+  const fm = app.metadataCache.getFileCache(f)?.frontmatter;
+  expect(fm?.['modular-tasks']).toEqual([c2]);
 });
 
-test('migrates legacy .positions.json to per-entity sidecars on first start', async () => {
+test('non-_index.md files in modular/ are ignored', async () => {
   const { app, store } = freshStore();
-  // 옛 데이터를 vault 에 미리 박아둠 — file index 인식되도록 vault.create 사용
+  store.start();
+  await waitTicks();
+  // A leftover legacy file shouldn't surface as an entity.
   await app.vault.createFolder('modular');
-  await app.vault.createFolder('modular/legacy');
-  await app.vault.create('modular/legacy/legacy.md', '---\nmodular-tags: []\n---\n\n');
-  await app.vault.adapter.write(
-    'modular/.positions.json',
-    JSON.stringify({ 'modular/legacy/legacy.md': { x: 42, y: 84 } }),
-  );
-
-  store.start();
+  await app.vault.create('modular/note.md', '# random');
   await waitTicks();
-
-  // 마이그레이션 후: 단일 파일 사라지고 sidecar 생김
-  expect(await app.vault.adapter.exists('modular/.positions.json')).toBe(false);
-  const raw = await app.vault.adapter.read('modular/legacy/.position');
-  expect(JSON.parse(raw)).toEqual({ x: 42, y: 84 });
-
-  // snapshot 의 position 도 마이그레이션 값 반영
-  const snap = store.getSnapshot();
-  const legacy = snap.modules.find((m: any) => m.name === 'legacy');
-  expect(legacy?.position).toEqual({ x: 42, y: 84 });
-});
-
-// ── REVIEW_PLAN PR G ────────────────────────────────────────────────────
-
-test('G1: deleting a leaf entity with no cached position still removes the sidecar', async () => {
-  const { app, store } = freshStore();
-  store.start();
-  await waitTicks();
-  // Build a leaf component (sibling sidecar shape: <dir>/.<base>.position).
-  await store.createModule('p', { x: 0, y: 0 });
-  await waitTicks();
-  await app.vault.create('modular/p/leaf.md', '---\nmodular-tasks: []\n---\n');
-  await app.vault.adapter.write('modular/p/.leaf.position', JSON.stringify({ x: 7, y: 8 }));
-  await waitTicks();
-  expect(await app.vault.adapter.exists('modular/p/.leaf.position')).toBe(true);
-  // Synthesize the "never cached" state.
-  (store as any).positions = {};
-  await store.deleteEntity('modular/p/leaf.md');
-  await waitTicks();
-  expect(await app.vault.adapter.exists('modular/p/.leaf.position')).toBe(false);
-});
-
-test('G2: leaf-leaf rename via adapter removes the old sibling sidecar', async () => {
-  const { app, store } = freshStore();
-  store.start();
-  await waitTicks();
-  await store.createModule('parent', { x: 0, y: 0 });
-  await waitTicks();
-  await app.vault.create('modular/parent/leaf.md', '---\nmodular-tasks: []\n---\n');
-  await waitTicks();
-  await (store as any).updateEntityPosition('modular/parent/leaf.md', { x: 5, y: 6 });
-  await waitTicks();
-  expect(await app.vault.adapter.exists('modular/parent/.leaf.position')).toBe(true);
-
-  const f = app.vault.getAbstractFileByPath('modular/parent/leaf.md');
-  await app.fileManager.renameFile(f, 'modular/parent/renamed.md');
-  await waitTicks();
-
-  expect(await app.vault.adapter.exists('modular/parent/.leaf.position')).toBe(false);
-  expect(await app.vault.adapter.exists('modular/parent/.renamed.position')).toBe(true);
+  expect(store.getSnapshot().entities.size).toBe(0);
 });

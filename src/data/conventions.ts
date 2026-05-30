@@ -1,30 +1,76 @@
-// 파일 컨벤션 — 재귀 nesting.
-// 모든 entity = 폴더 + 동명 md (expanded). 단 사용자가 만든 단독 md (leaf) 도 인식.
+// 파일 컨벤션 — v2 (conventions E, 2026-05).
+//
+// 모든 entity = 폴더 + `_index.md` (본체). leaf ↔ expanded 구분 폐지.
+// 본체 식별은 path 패턴이 아니라 frontmatter 의 `modular-id` (id.ts).
+//
+// 폴더 nesting 은 hierarchy 표시 + 사용자 직관을 위한 보조 표현일 뿐.
+// 실제 parent-child 관계는 frontmatter `modular-parent` 가 source of truth.
+// (마이그 단계에서 폴더 nesting 과 parent id 가 일치하도록 보장.)
 //
 // 규약:
-//   modular/X/X.md          → expanded module
-//   modular/X/Y.md  (Y!=X)  → leaf component (parent = modular/X/X.md)
-//   modular/X/Y/Y.md        → expanded component (parent = modular/X/X.md)
-//   modular/X/Y/Z/Z.md      → expanded component (parent = modular/X/Y/Y.md)
-//   modular/X/Y/Z.md (Z!=Y) → leaf component (parent = modular/X/Y/Y.md)
-//   modular/A.md            → 무시 (modular 직속 단독 md)
-//   modular/.../.ai/...     → 무시 (AI 영역)
+//   modular/X/_index.md           → entity (X 라는 이름의 entity 본체)
+//   modular/X/Y/_index.md         → entity (X 폴더 안에 nested 된 자식 entity)
+//   modular/X/Y/.position         → 위치 sidecar
+//   modular/A.md, modular/A/B.md  → 무시 (entity 아님)
+//   modular/.../.ai/...           → 무시 (AI 영역)
+//   modular/.migration-v2         → 마이그 완료 마커
+//   modular/.../.position         → entity 위치 sidecar (모든 entity 단일 패턴)
 
 export const MODULAR_FOLDER = 'modular';
-/** 옛 단일 파일. 첫 부팅 시 entity 별 dotfile 로 분배 후 삭제. */
-export const LEGACY_POSITIONS_PATH = 'modular/.positions.json';
 export const AI_FOLDER = '.ai';
+export const INDEX_FILE = '_index.md';
+export const POSITION_FILE = '.position';
+export const MIGRATION_MARKER = 'modular/.migration-v2';
 
-export function isModularPath(path: string): boolean {
+/** 본체 _index.md 인지 (modular 영역 + AI 제외). */
+export function isEntityIndexPath(path: string): boolean {
   if (!path.startsWith(`${MODULAR_FOLDER}/`)) return false;
-  if (!path.endsWith('.md')) return false;
   if (path.includes(`/${AI_FOLDER}/`)) return false;
-  return true;
+  return path.endsWith(`/${INDEX_FILE}`);
 }
 
-export function basenameFromPath(path: string): string {
-  const last = path.split('/').pop() ?? path;
-  return last.replace(/\.md$/i, '');
+/** 좌표 sidecar 인지. */
+export function isPositionSidecarPath(path: string): boolean {
+  if (!path.startsWith(`${MODULAR_FOLDER}/`)) return false;
+  if (path.includes(`/${AI_FOLDER}/`)) return false;
+  return path.endsWith(`/${POSITION_FILE}`);
+}
+
+/** entity index path → 그 entity 의 폴더 path. */
+export function folderPathFromIndex(indexPath: string): string {
+  return indexPath.slice(0, -`/${INDEX_FILE}`.length);
+}
+
+/** folder path → 그 안의 _index.md path. */
+export function indexPathFromFolder(folderPath: string): string {
+  return `${folderPath}/${INDEX_FILE}`;
+}
+
+/** folder path → 그 안의 .position path. */
+export function positionSidecarPath(folderPath: string): string {
+  return `${folderPath}/${POSITION_FILE}`;
+}
+
+/** position sidecar path → 그 entity 의 폴더 path. */
+export function folderPathFromSidecar(sidecarPath: string): string {
+  return sidecarPath.slice(0, -`/${POSITION_FILE}`.length);
+}
+
+/** 폴더 path → 표시 이름 (마지막 segment). */
+export function nameFromFolderPath(folderPath: string): string {
+  const i = folderPath.lastIndexOf('/');
+  return i < 0 ? folderPath : folderPath.slice(i + 1);
+}
+
+/** 폴더 path → 부모 폴더 path. modular/X 는 modular (root 위라 entity 없음). */
+export function parentFolderPath(folderPath: string): string {
+  const i = folderPath.lastIndexOf('/');
+  return i < 0 ? '' : folderPath.slice(0, i);
+}
+
+/** 부모 폴더 path 가 modular 루트면 그 entity 는 module. 아니면 component. */
+export function kindFromFolderPath(folderPath: string): 'module' | 'component' {
+  return parentFolderPath(folderPath) === MODULAR_FOLDER ? 'module' : 'component';
 }
 
 export function sanitizeFileName(raw: string): string | null {
@@ -32,99 +78,18 @@ export function sanitizeFileName(raw: string): string | null {
   return cleaned || null;
 }
 
-/** entity 의 본체 md 인지 + 부모/expanded 여부 추론. */
-export interface EntityInfo {
-  kind: 'module' | 'component';
-  /** parent entity 의 본체 md path. module 이면 null. */
-  parentEntityPath: string | null;
-  /** 폴더가 있어 자식을 가질 수 있는지. (true = expanded, false = leaf) */
-  expanded: boolean;
-  /** entity 의 폴더 path. expanded 면 그 폴더, leaf 면 부모 폴더. */
-  folderPath: string;
-}
-
-export function entityInfo(path: string): EntityInfo | null {
-  if (!isModularPath(path)) return null;
-  const inside = path.slice(`${MODULAR_FOLDER}/`.length, -3); // X/X 또는 X/Y/Z
-  const parts = inside.split('/');
-  if (parts.length < 2) return null;
-
-  const last = parts[parts.length - 1];
-  const parentSeg = parts[parts.length - 2];
-  const isExpanded = last === parentSeg;
-
-  if (isExpanded) {
-    // modular/.../X/X.md
-    if (parts.length === 2) {
-      // modular/X/X.md → module
-      return {
-        kind: 'module',
-        parentEntityPath: null,
-        expanded: true,
-        folderPath: `${MODULAR_FOLDER}/${parts[0]}`,
-      };
-    }
-    // modular/<...>/X/X.md → component
-    const parentFolderName = parts[parts.length - 3];
-    const parentFolderPath = `${MODULAR_FOLDER}/${parts.slice(0, -2).join('/')}`;
-    return {
-      kind: 'component',
-      parentEntityPath: `${parentFolderPath}/${parentFolderName}.md`,
-      expanded: true,
-      folderPath: `${MODULAR_FOLDER}/${parts.slice(0, -1).join('/')}`,
-    };
-  }
-
-  // leaf: modular/<...>/M/C.md where C != M
-  const parentFolderName = parts[parts.length - 2];
-  const parentFolderPath = `${MODULAR_FOLDER}/${parts.slice(0, -1).join('/')}`;
-  return {
-    kind: 'component',
-    parentEntityPath: `${parentFolderPath}/${parentFolderName}.md`,
-    expanded: false,
-    folderPath: parentFolderPath,
-  };
-}
-
-/** 새 module 의 path 와 폴더 path 생성. */
-export function newModulePaths(name: string): { folder: string; md: string } | null {
+/** 새 module 의 폴더 + index path. */
+export function newModulePaths(name: string): { folder: string; index: string } | null {
   const safe = sanitizeFileName(name);
   if (!safe) return null;
   const folder = `${MODULAR_FOLDER}/${safe}`;
-  return { folder, md: `${folder}/${safe}.md` };
+  return { folder, index: indexPathFromFolder(folder) };
 }
 
-/** parent expanded 폴더 안에 새 자식 component 의 path 생성. expanded 형태로. */
-export function newChildComponentPaths(parentFolderPath: string, name: string): { folder: string; md: string } | null {
+/** 자식 entity 의 폴더 + index path (parent folder 안에). */
+export function newChildEntityPaths(parentFolderPath: string, name: string): { folder: string; index: string } | null {
   const safe = sanitizeFileName(name);
   if (!safe) return null;
   const folder = `${parentFolderPath}/${safe}`;
-  return { folder, md: `${folder}/${safe}.md` };
-}
-
-/** entity 의 좌표 sidecar dotfile 경로.
- *  - expanded entity 는 폴더 안의 `.position` (folder-scoped dotfile)
- *  - leaf entity 는 sibling 의 `.<basename>.position`
- *  둘 다 dotfile 이라 Obsidian explorer 의 기본 표시에서 hidden. */
-export function positionSidecarPath(info: EntityInfo, entityPath: string): string {
-  if (info.expanded) {
-    return `${info.folderPath}/.position`;
-  }
-  const slashIdx = entityPath.lastIndexOf('/');
-  const dir = entityPath.slice(0, slashIdx);
-  const base = entityPath.slice(slashIdx + 1).replace(/\.md$/, '');
-  return `${dir}/.${base}.position`;
-}
-
-/** leaf entity 가 expanded 로 promote 될 때의 새 path. */
-export function promotedLeafPaths(leafPath: string): { folder: string; md: string } | null {
-  const info = entityInfo(leafPath);
-  if (!info || info.expanded) return null;
-  const base = basenameFromPath(leafPath);
-  // leafPath = parentDir/X.md → parentDir = leafPath up to the last '/'
-  const slashIdx = leafPath.lastIndexOf('/');
-  const parentDirClean = leafPath.slice(0, slashIdx);
-  const folder = `${parentDirClean}/${base}`;
-  const md = `${folder}/${base}.md`;
-  return { folder, md };
+  return { folder, index: indexPathFromFolder(folder) };
 }

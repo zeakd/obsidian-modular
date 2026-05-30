@@ -1,41 +1,41 @@
-// VaultStore — 폴더 nesting 기반 entity 트리 + 각 entity 의 sidecar(.position).
-// type / parent 는 path 의 폴더 구조가 결정 (frontmatter 무관).
+// VaultStore — v2 (conventions E, 2026-05).
 //
-// (옛 단일 `.positions.json` 은 v0 마이그레이션 코드 안에만 남아 있고
-// 새로 쓰진 않음. loadAllPositions 가 한 번 분배 후 삭제.)
+// 모든 entity = 폴더 + `_index.md` (본체). id (frontmatter `modular-id`) 가
+// source of truth. cache / snapshot / tasks 모두 id 기반.
+// path 는 표현. rename / move 에 invariant.
 
 import { App, Menu, Platform, TAbstractFile, TFile, TFolder, WorkspaceLeaf, normalizePath } from 'obsidian';
-import type { Workspace, Module, Component, ComponentTask } from './types';
+import type { Entity, EntityId, Task, Workspace } from './types';
 import {
-  moduleFromEntity,
-  componentFromEntity,
-  newModuleFileBody,
-  newComponentFileBody,
-  writeModularFrontmatter,
+  entityFromIndex,
+  newComponentIndexBody,
+  newModuleIndexBody,
   setOutgoingTasks,
 } from './frontmatter';
 import {
+  AI_FOLDER,
+  INDEX_FILE,
   MODULAR_FOLDER,
-  LEGACY_POSITIONS_PATH,
-  isModularPath,
-  entityInfo,
+  folderPathFromIndex,
+  folderPathFromSidecar,
+  indexPathFromFolder,
+  isEntityIndexPath,
+  isPositionSidecarPath,
+  nameFromFolderPath,
+  newChildEntityPaths,
   newModulePaths,
-  newChildComponentPaths,
-  promotedLeafPaths,
+  parentFolderPath,
   positionSidecarPath,
   sanitizeFileName,
-  basenameFromPath,
 } from './conventions';
+import { newId } from './id';
 
 type Listener = () => void;
-type PositionsMap = Record<string, { x: number; y: number }>;
+type PositionsMap = Record<EntityId, { x: number; y: number }>;
 
-// H8: frozen so an accidental mutation by a subscriber doesn't pollute every
-// future getSnapshot() that defaults to it.
 const EMPTY: Workspace = Object.freeze({
-  modules: Object.freeze<Module[]>([]) as unknown as Module[],
-  components: Object.freeze<Component[]>([]) as unknown as Component[],
-  componentTasks: Object.freeze<ComponentTask[]>([]) as unknown as ComponentTask[],
+  entities: new Map<EntityId, Entity>(),
+  tasks: Object.freeze<Task[]>([]) as unknown as Task[],
 });
 
 export class VaultStore {
@@ -43,19 +43,15 @@ export class VaultStore {
   private snapshot: Workspace = EMPTY;
   private listeners = new Set<Listener>();
   private detachFns: Array<() => void> = [];
-  // entity path → position. source 는 entity 별 .position dotfile.
-  // 캐시 in-memory; drag stop 마다 *그 entity 의 sidecar 만* write.
   private positions: PositionsMap = {};
   private positionsLoaded = false;
-  // Events that arrived before positionsLoaded; replayed once load resolves so
-  // we don't emit a (0,0)-fallback snapshot to subscribers (Canvas locks the
-  // first position it sees → all modules permanently at origin).
   private pendingRebuild = false;
-  // Sidecar paths we just wrote ourselves; the vault modify event for them
-  // is self-originated and shouldn't trigger another rebuild (G8).
   private suppressNextSidecarModify = new Set<string>();
-  // 우측 split leaf 재사용 — 클릭마다 같은 leaf 의 파일이 바뀌도록.
-  // detach 됐는지는 매번 getLeavesOfType 으로 검증.
+  /** id → folderPath cache built on each rebuild. Used by event handlers to
+   *  resolve folder lookups without walking the vault each time. */
+  private folderPathById = new Map<EntityId, string>();
+  /** folder path → id. inverse of folderPathById. */
+  private idByFolderPath = new Map<string, EntityId>();
   private sideLeaf: WorkspaceLeaf | null = null;
 
   constructor(app: App) {
@@ -63,60 +59,74 @@ export class VaultStore {
   }
 
   start(): void {
-    // G3: queue rebuilds until positions are loaded; flush as a single rebuild
-    // so subscribers see a coherent first snapshot (not (0,0)-fallback).
     void this.loadAllPositions().then(() => {
       if (this.pendingRebuild) this.pendingRebuild = false;
       this.rebuild();
     });
     const vault = this.app.vault;
     const mc = this.app.metadataCache;
+
     const onCreate = (f: TAbstractFile) => {
-      if (!(f instanceof TFile) || !isModularPath(f.path)) return;
-      // G4: a sidecar may already exist on disk (user copied <name>.md +
-      // .<name>.position together from another vault). Load it before
-      // rebuilding so the snapshot carries the real position.
-      void this.loadSinglePositionByEntity(f.path).then(() => this.requestRebuild());
+      if (f instanceof TFile && isEntityIndexPath(f.path)) this.requestRebuild();
     };
     const onModify = (f: TAbstractFile) => {
-      if (f instanceof TFile && isModularPath(f.path)) this.requestRebuild();
-      // 외부에서 .position 파일이 직접 수정되면 그 entity 만 reload.
-      if (/\.position$/.test(f.path) && f.path.startsWith(`${MODULAR_FOLDER}/`)) {
-        // G8: skip self-originated writes from writeSinglePosition.
+      if (f instanceof TFile && isEntityIndexPath(f.path)) this.requestRebuild();
+      if (isPositionSidecarPath(f.path)) {
         if (this.suppressNextSidecarModify.delete(f.path)) return;
         void this.loadSinglePositionByFile(f.path).then(() => this.requestRebuild());
       }
     };
     const onDelete = (f: TAbstractFile) => {
-      const p = f.path;
-      if (!isModularPath(p)) return;
-      // G1: always clean up the sidecar (regardless of whether the position
-      // was in cache). Otherwise an entity deleted before its drag created
-      // a cache entry leaves an orphaned `.<base>.position` forever.
-      delete this.positions[p];
-      void this.deleteSidecarForEntity(p);
-      this.requestRebuild();
+      // Folder delete → drop everything beneath in our caches.
+      if (isEntityIndexPath(f.path)) {
+        const folder = folderPathFromIndex(f.path);
+        const id = this.idByFolderPath.get(folder);
+        if (id) {
+          delete this.positions[id];
+          this.idByFolderPath.delete(folder);
+          this.folderPathById.delete(id);
+        }
+        this.requestRebuild();
+      } else if (f instanceof TFolder && f.path.startsWith(`${MODULAR_FOLDER}/`)) {
+        // Folder gone → its _index.md (and any nested entity folders) implicitly deleted.
+        for (const [folder, id] of [...this.idByFolderPath]) {
+          if (folder === f.path || folder.startsWith(f.path + '/')) {
+            delete this.positions[id];
+            this.idByFolderPath.delete(folder);
+            this.folderPathById.delete(id);
+          }
+        }
+        this.requestRebuild();
+      }
     };
     const onRename = (f: TAbstractFile, oldPath: string) => {
-      // 폴더 rename 도 자식별 emit 됨. path 만 보고 처리.
-      const newPath = f.path;
-      const newOk = isModularPath(newPath);
-      const oldOk = isModularPath(oldPath);
-      const pos = this.positions[oldPath];
-      if (oldOk && pos) {
-        delete this.positions[oldPath];
-        if (newOk) this.positions[newPath] = pos;
-        if (newOk) void this.writeSinglePosition(newPath, pos);
-        // G2: leaf-leaf rename via adapter (external editor) doesn't move the
-        // sibling `.<oldBase>.position` along with the .md. Remove it
-        // explicitly so the old sidecar doesn't linger.
-        void this.deleteSidecarForEntity(oldPath);
+      // Folder rename → rewrite path-keyed caches. Position is keyed by id
+      // (not path) so positions cache is unaffected. Sidecars under the
+      // renamed folder follow naturally.
+      const oldIsIndex = isEntityIndexPath(oldPath);
+      const newIsIndex = f instanceof TFile && isEntityIndexPath(f.path);
+      if (oldIsIndex || newIsIndex) {
+        this.requestRebuild();
+        return;
       }
-      if (newOk || oldOk) this.requestRebuild();
+      // Folder-level rename (no extension). Update folderPath caches.
+      if (f instanceof TFolder && oldPath.startsWith(`${MODULAR_FOLDER}/`)) {
+        const newPath = f.path;
+        for (const [folder, id] of [...this.idByFolderPath]) {
+          if (folder === oldPath || folder.startsWith(oldPath + '/')) {
+            const moved = newPath + folder.slice(oldPath.length);
+            this.idByFolderPath.delete(folder);
+            this.idByFolderPath.set(moved, id);
+            this.folderPathById.set(id, moved);
+          }
+        }
+        this.requestRebuild();
+      }
     };
     const onMcChange = (f: TFile) => {
-      if (isModularPath(f.path)) this.requestRebuild();
+      if (isEntityIndexPath(f.path)) this.requestRebuild();
     };
+
     const r1 = vault.on('create', onCreate);
     const r2 = vault.on('modify', onModify);
     const r3 = vault.on('delete', onDelete);
@@ -144,61 +154,49 @@ export class VaultStore {
   getSnapshot = (): Workspace => this.snapshot;
   private emit(): void { for (const fn of this.listeners) fn(); }
 
-  /**
-   * Buffer event-driven rebuilds until positions finish loading (G3).
-   * Once loaded, a single rebuild fires from the loadAllPositions chain.
-   */
   private requestRebuild(): void {
-    if (!this.positionsLoaded) {
-      this.pendingRebuild = true;
-      return;
-    }
+    if (!this.positionsLoaded) { this.pendingRebuild = true; return; }
     this.rebuild();
   }
 
-  // ── positions ────────────────────────────────────────────
-  //
-  // 각 entity 의 좌표는 *그 entity 의 sidecar dotfile* 에 저장.
-  // 다른 entity 의 drag 가 같은 파일을 건드리지 않으므로 sync conflict 빈도가
-  // 단일 .positions.json 보다 훨씬 낮다.
+  // ── positions (sidecar at <folder>/.position) ──────────────────────────
 
-  /** 첫 부팅 시 호출. 모든 entity 의 sidecar 를 읽어 메모리 캐시 구성.
-   *  옛 .positions.json 이 있으면 한 번 분배 후 삭제 (마이그레이션). */
   private async loadAllPositions(): Promise<void> {
     try {
       const adapter = this.app.vault.adapter;
-      // 1. 마이그레이션: 옛 단일 파일 → 각 entity 의 sidecar 로 분배.
-      if (await adapter.exists(LEGACY_POSITIONS_PATH)) {
-        try {
-          const raw = await adapter.read(LEGACY_POSITIONS_PATH);
-          const parsed: unknown = JSON.parse(raw);
-          if (parsed && typeof parsed === 'object') {
-            for (const [path, v] of Object.entries(parsed as Record<string, unknown>)) {
-              if (v && typeof v === 'object' && 'x' in v && 'y' in v
-                  && typeof (v as { x: unknown }).x === 'number'
-                  && typeof (v as { y: unknown }).y === 'number') {
-                const pos = { x: (v as { x: number }).x, y: (v as { y: number }).y };
-                this.positions[path] = pos;
-                // 본체 md 가 존재할 때만 sidecar write — orphan 만들지 않음.
-                if (await adapter.exists(path)) {
-                  await this.writeSinglePosition(path, pos);
-                }
-              }
-            }
+      // walk modular/ for any .position sidecar; the entity's id comes from
+      // its sibling _index.md (read separately when we know the path).
+      const stack = [MODULAR_FOLDER];
+      while (stack.length) {
+        const dir = stack.pop()!;
+        if (!(await adapter.exists(dir))) continue;
+        const { files, folders } = await adapter.list(dir);
+        for (const file of files) {
+          if (file.endsWith(`/${INDEX_FILE}`) || file.endsWith(`/.position`)) {
+            // handled below
           }
-          await adapter.remove(LEGACY_POSITIONS_PATH);
-          // One-shot migration: user-visible toast is overkill but devtools
-          // breadcrumb helps debugging "where did my .positions.json go".
-          // eslint-disable-next-line obsidianmd/rule-custom-message -- diagnostic for a one-time migration
-          console.log('[modular] migrated .positions.json → per-entity .position sidecars');
-        } catch (e) {
-          console.error('[modular] migration failed:', e);
+        }
+        for (const sub of folders) {
+          if (sub.endsWith(`/${AI_FOLDER}`) || sub.includes(`/${AI_FOLDER}/`)) continue;
+          stack.push(sub);
         }
       }
-      // 2. 정상 로드: 모든 modular 영역의 md 를 walk 해서 각자 sidecar read.
+      // Build id ↔ folderPath map first by scanning all _index.md.
       for (const f of this.app.vault.getMarkdownFiles()) {
-        if (!isModularPath(f.path)) continue;
-        await this.loadSinglePositionByEntity(f.path);
+        if (!isEntityIndexPath(f.path)) continue;
+        const fm = this.app.metadataCache.getFileCache(f)?.frontmatter;
+        const id = typeof fm?.['modular-id'] === 'string' ? fm['modular-id'] : null;
+        if (!id) continue;
+        const folderPath = folderPathFromIndex(f.path);
+        this.folderPathById.set(id, folderPath);
+        this.idByFolderPath.set(folderPath, id);
+      }
+      // Then load each entity's sidecar by id.
+      for (const [id, folderPath] of this.folderPathById) {
+        const side = positionSidecarPath(folderPath);
+        if (!(await adapter.exists(side))) continue;
+        const pos = await readPositionFile(adapter, side);
+        if (pos) this.positions[id] = pos;
       }
     } catch (e) {
       console.error('[modular] loadAllPositions failed:', e);
@@ -207,75 +205,19 @@ export class VaultStore {
     }
   }
 
-  /** entity path 의 sidecar 한 개만 read → 캐시 갱신. */
-  private async loadSinglePositionByEntity(entityPath: string): Promise<void> {
-    const info = entityInfo(entityPath);
-    if (!info) return;
-    const side = positionSidecarPath(info, entityPath);
-    await this.loadSinglePositionByFile(side, entityPath);
+  private async loadSinglePositionByFile(sidecarPath: string): Promise<void> {
+    if (!isPositionSidecarPath(sidecarPath)) return;
+    const folderPath = folderPathFromSidecar(sidecarPath);
+    const id = this.idByFolderPath.get(folderPath);
+    if (!id) return;
+    const pos = await readPositionFile(this.app.vault.adapter, sidecarPath);
+    if (pos) this.positions[id] = pos;
   }
 
-  /** sidecar 파일 경로로 직접 read. entityPath 는 옵션 — 모르면 sidecar 에서 역추론 어렵지만
-   *  외부 modify 이벤트의 경우 sidecar 가 path → 그 entity path 를 우리가 알아야 update.
-   *  단순화: sidecar 의 위치만 보고 entity path 추정. */
-  private async loadSinglePositionByFile(sidecarPath: string, entityPathHint?: string): Promise<void> {
+  private async writeSinglePosition(folderPath: string, pos: { x: number; y: number }): Promise<void> {
+    const side = positionSidecarPath(folderPath);
     try {
-      const adapter = this.app.vault.adapter;
-      if (!(await adapter.exists(sidecarPath))) return;
-      const raw = await adapter.read(sidecarPath);
-      const parsed: unknown = JSON.parse(raw);
-      if (!parsed || typeof parsed !== 'object') return;
-      const x = Number((parsed as { x?: unknown }).x);
-      const y = Number((parsed as { y?: unknown }).y);
-      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-      const entityPath = entityPathHint ?? this.entityPathFromSidecar(sidecarPath);
-      if (!entityPath) return;
-      this.positions[entityPath] = { x, y };
-    } catch (e) {
-      console.error('[modular] loadSinglePosition failed:', e);
-    }
-  }
-
-  /** sidecar 경로 → 그 entity 의 md path 역추론.
-   *  - `<folder>/.position`        → `<folder>/<basename(folder)>.md` (expanded)
-   *  - `<dir>/.<base>.position`    → `<dir>/<base>.md` (leaf)
-   *
-   *  G5: validate the recovered path via entityInfo() before returning, so
-   *  unrelated `.position` files (e.g. someone parks `notes/.todo.position`)
-   *  don't pollute the positions cache.
-   */
-  private entityPathFromSidecar(sidecarPath: string): string | null {
-    if (!sidecarPath.endsWith('.position')) return null;
-    const slashIdx = sidecarPath.lastIndexOf('/');
-    if (slashIdx < 0) return null;
-    const dir = sidecarPath.slice(0, slashIdx);
-    const file = sidecarPath.slice(slashIdx + 1);
-    let candidate: string | null = null;
-    if (file === '.position') {
-      // expanded: <dir>/<basename(dir)>.md
-      const dirSlash = dir.lastIndexOf('/');
-      const folderName = dir.slice(dirSlash + 1);
-      candidate = `${dir}/${folderName}.md`;
-    } else if (file.startsWith('.') && file.endsWith('.position')) {
-      // leaf: .<base>.position
-      const base = file.slice(1, -('.position'.length));
-      candidate = `${dir}/${base}.md`;
-    }
-    if (!candidate) return null;
-    return entityInfo(candidate) ? candidate : null;
-  }
-
-  /** 한 entity 의 sidecar 만 write — drag stop 마다 호출. */
-  private async writeSinglePosition(entityPath: string, pos: { x: number; y: number }): Promise<void> {
-    const info = entityInfo(entityPath);
-    if (!info) return;
-    const side = positionSidecarPath(info, entityPath);
-    try {
-      // Tag the sidecar path so the vault.modify event handler skips it
-      // (G8 — otherwise every drag stop fires a redundant rebuild on the
-      // next tick when the modify event arrives for our own write).
       this.suppressNextSidecarModify.add(side);
-      // expanded 면 폴더가 이미 있음. leaf 면 sibling 폴더 (= parent 폴더) 이미 있음.
       await this.app.vault.adapter.write(side, JSON.stringify(pos));
     } catch (e) {
       this.suppressNextSidecarModify.delete(side);
@@ -283,300 +225,178 @@ export class VaultStore {
     }
   }
 
-  /** entity 삭제 시 sidecar 도 같이 삭제 — expanded 는 폴더 통째 삭제로 자동 따라옴,
-   *  leaf 는 sibling 이라 명시 삭제 필요. */
-  private async deleteSidecarForEntity(entityPath: string): Promise<void> {
-    const info = entityInfo(entityPath);
-    if (!info) {
-      // info 가 nil 인 경우 (이미 entity 가 사라진 후 호출 등) — leaf sidecar 만 추정 시도.
-      const slashIdx = entityPath.lastIndexOf('/');
-      if (slashIdx < 0) return;
-      const dir = entityPath.slice(0, slashIdx);
-      const base = entityPath.slice(slashIdx + 1).replace(/\.md$/, '');
-      const guess = `${dir}/.${base}.position`;
-      try {
-        const adapter = this.app.vault.adapter;
-        if (await adapter.exists(guess)) await adapter.remove(guess);
-      } catch { /* best-effort cleanup, ignore */ }
-      return;
-    }
-    if (info.expanded) return; // 폴더 통째 삭제로 자동
-    const side = positionSidecarPath(info, entityPath);
-    try {
-      const adapter = this.app.vault.adapter;
-      if (await adapter.exists(side)) await adapter.remove(side);
-    } catch (e) {
-      console.error('[modular] deleteSidecar failed:', e);
-    }
-  }
-
-  // ── rebuild — path 기반 분류 ─────────────────────────────
+  // ── snapshot ────────────────────────────────────────────────────────────
 
   private rebuild(): void {
     const vault = this.app.vault;
     const mc = this.app.metadataCache;
-
-    const modules: Module[] = [];
-    const components: Component[] = [];
-    const componentTasks: ComponentTask[] = [];
-    type RawTask = { fromPath: string; toPath: string };
-    const rawTasks: RawTask[] = [];
-    const allEntityPaths = new Set<string>();
+    const entities = new Map<EntityId, Entity>();
+    const tasksRaw: Array<{ fromId: EntityId; toId: EntityId }> = [];
+    // Rebuild path↔id caches inline.
+    this.folderPathById.clear();
+    this.idByFolderPath.clear();
 
     for (const f of vault.getMarkdownFiles()) {
-      const info = entityInfo(f.path);
-      if (!info) continue;
-      allEntityPaths.add(f.path);
+      if (!isEntityIndexPath(f.path)) continue;
       const fm = mc.getFileCache(f)?.frontmatter;
-      const pos = this.positions[f.path];
-      if (info.kind === 'module') {
-        modules.push(moduleFromEntity(f.path, fm, pos));
-      } else {
-        // G6: parentEntityPath is typed nullable. A future refactor could
-        // legitimately return null (orphaned component); skip rather than
-        // emit a component with `parentPath = null as unknown as string`
-        // which then crashes Canvas edge wiring.
-        if (!info.parentEntityPath) continue;
-        components.push(componentFromEntity(f.path, info.parentEntityPath, fm, pos));
-        const ts: unknown = fm?.['modular-tasks'];
-        if (Array.isArray(ts)) {
-          for (const dest of ts) {
-            if (typeof dest === 'string' && dest) rawTasks.push({ fromPath: f.path, toPath: dest });
-          }
+      const id = typeof fm?.['modular-id'] === 'string' ? fm['modular-id'] : null;
+      if (!id) continue;
+      const folderPath = folderPathFromIndex(f.path);
+      const pos = this.positions[id] ?? { x: 0, y: 0 };
+      const ent = entityFromIndex(f.path, fm, pos);
+      if (!ent) continue;
+      entities.set(id, ent);
+      this.folderPathById.set(id, folderPath);
+      this.idByFolderPath.set(folderPath, id);
+      const tasks: unknown = fm?.['modular-tasks'];
+      if (Array.isArray(tasks)) {
+        for (const t of tasks) {
+          if (typeof t === 'string' && t.length > 0) tasksRaw.push({ fromId: id, toId: t });
         }
       }
     }
 
+    // Filter tasks: both endpoints must exist + dedup.
     const seen = new Set<string>();
-    for (const t of rawTasks) {
-      if (!allEntityPaths.has(t.fromPath) || !allEntityPaths.has(t.toPath)) continue;
-      if (t.fromPath === t.toPath) continue;
-      const id = `task:${t.fromPath}→${t.toPath}`;
-      if (seen.has(id)) continue;
-      seen.add(id);
-      componentTasks.push({ id, fromPath: t.fromPath, toPath: t.toPath });
+    const tasks: Task[] = [];
+    for (const t of tasksRaw) {
+      if (!entities.has(t.fromId) || !entities.has(t.toId)) continue;
+      const key = `${t.fromId}|${t.toId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      tasks.push(t);
     }
 
-    // stale positions 정리 — entity 가 사라진 경우 캐시만 정리.
-    // sidecar 파일은 entity delete 이벤트에서 deleteSidecarForEntity 가 처리.
-    for (const k of Object.keys(this.positions)) {
-      if (!allEntityPaths.has(k)) delete this.positions[k];
-    }
-
-    this.snapshot = { modules, components, componentTasks };
+    this.snapshot = { entities, tasks };
     this.emit();
   }
 
-  // ── mutation ─────────────────────────────────────────────
+  // ── mutations ───────────────────────────────────────────────────────────
 
-  async ensureModularFolder(): Promise<void> {
-    const f = this.app.vault.getAbstractFileByPath(MODULAR_FOLDER);
-    if (!f) await this.app.vault.createFolder(MODULAR_FOLDER);
-    else if (!(f instanceof TFolder)) {
-      throw new Error(`'${MODULAR_FOLDER}' exists and is not a folder`);
-    }
-  }
-
-  private async ensureFolder(path: string): Promise<void> {
-    const f = this.app.vault.getAbstractFileByPath(path);
-    if (!f) await this.app.vault.createFolder(path);
-    else if (!(f instanceof TFolder)) {
-      throw new Error(`'${path}' exists and is not a folder`);
-    }
-  }
-
-  async createModule(name: string, position: { x: number; y: number }): Promise<string> {
+  async createModule(name: string, position: { x: number; y: number }): Promise<EntityId | null> {
     const paths = newModulePaths(name);
-    if (!paths) throw new Error('invalid name');
-    await this.ensureModularFolder();
-    await this.ensureFolder(paths.folder);
-    await this.app.vault.create(normalizePath(paths.md), newModuleFileBody());
-    this.positions[paths.md] = position;
-    await this.writeSinglePosition(paths.md, position);
-    return paths.md;
+    if (!paths) return null;
+    const id = newId();
+    await this.app.vault.createFolder(paths.folder);
+    await this.app.vault.create(paths.index, newModuleIndexBody(id));
+    this.positions[id] = position;
+    await this.writeSinglePosition(paths.folder, position);
+    return id;
   }
 
-  /** parent 에 자식 component 추가. parent 가 leaf 면 자동으로 expanded 로 promote. */
   async createChildComponent(
-    parentPath: string,
+    parentId: EntityId,
     name: string,
     position: { x: number; y: number },
-  ): Promise<string> {
-    const parentInfo = entityInfo(parentPath);
-    if (!parentInfo) throw new Error(`not a modular entity: ${parentPath}`);
-
-    let parentFolder: string;
-    if (parentInfo.expanded) {
-      parentFolder = parentInfo.folderPath;
-    } else {
-      // leaf → promote
-      parentFolder = await this.promoteLeaf(parentPath);
-    }
-
-    const paths = newChildComponentPaths(parentFolder, name);
-    if (!paths) throw new Error('invalid name');
-    await this.ensureFolder(paths.folder);
-    await this.app.vault.create(normalizePath(paths.md), newComponentFileBody());
-    this.positions[paths.md] = position;
-    await this.writeSinglePosition(paths.md, position);
-    return paths.md;
+  ): Promise<EntityId | null> {
+    const parentFolder = this.folderPathById.get(parentId);
+    if (!parentFolder) return null;
+    const paths = newChildEntityPaths(parentFolder, name);
+    if (!paths) return null;
+    const id = newId();
+    await this.app.vault.createFolder(paths.folder);
+    await this.app.vault.create(paths.index, newComponentIndexBody(id, parentId));
+    this.positions[id] = position;
+    await this.writeSinglePosition(paths.folder, position);
+    return id;
   }
 
-  /** leaf 를 expanded 로 promote — md 를 X/X.md 로 이동. 반환: 새 폴더 path. */
-  private async promoteLeaf(leafPath: string): Promise<string> {
-    const promoted = promotedLeafPaths(leafPath);
-    if (!promoted) throw new Error(`cannot promote: ${leafPath}`);
-    await this.ensureFolder(promoted.folder);
-    const f = this.app.vault.getAbstractFileByPath(leafPath);
-    if (f instanceof TFile) {
-      await this.app.fileManager.renameFile(f, normalizePath(promoted.md));
-      if (this.positions[leafPath]) {
-        const pos = this.positions[leafPath];
-        this.positions[promoted.md] = pos;
-        delete this.positions[leafPath];
-        // 옛 leaf sidecar 삭제 + 새 expanded sidecar 작성
-        try {
-          const oldSidecar = `${leafPath.slice(0, leafPath.lastIndexOf('/'))}/.${basenameFromPath(leafPath)}.position`;
-          const adapter = this.app.vault.adapter;
-          if (await adapter.exists(oldSidecar)) await adapter.remove(oldSidecar);
-        } catch { /* best-effort cleanup, ignore */ }
-        await this.writeSinglePosition(promoted.md, pos);
-      }
-    }
-    return promoted.folder;
-  }
-
-  async updateEntityPosition(path: string, pos: { x: number; y: number }): Promise<void> {
-    this.positions[path] = pos;
-    await this.writeSinglePosition(path, pos);
+  async updateEntityPosition(id: EntityId, pos: { x: number; y: number }): Promise<void> {
+    const folderPath = this.folderPathById.get(id);
+    if (!folderPath) return;
+    this.positions[id] = pos;
+    await this.writeSinglePosition(folderPath, pos);
     this.rebuild();
   }
 
-  async updateModuleTags(path: string, tags: string[]): Promise<void> {
-    const f = this.app.vault.getAbstractFileByPath(path);
-    if (!(f instanceof TFile)) return;
-    await writeModularFrontmatter(this.app, f, { 'modular-tags': tags });
-  }
-
-  /** delete — expanded 면 폴더 통째 (자식들 다 사라짐), leaf 면 md + sibling sidecar. */
-  async deleteEntity(path: string): Promise<void> {
-    const info = entityInfo(path);
-    if (!info) return;
-    if (info.expanded) {
-      const folder = this.app.vault.getAbstractFileByPath(info.folderPath);
-      if (folder instanceof TFolder) {
-        // 안의 모든 positions 캐시 정리 — sidecar 파일들은 폴더 통째 삭제로 자동 따라옴.
-        const prefix = `${info.folderPath}/`;
-        for (const k of Object.keys(this.positions)) {
-          if (k === path || k.startsWith(prefix)) delete this.positions[k];
+  async deleteEntity(id: EntityId): Promise<void> {
+    const folderPath = this.folderPathById.get(id);
+    if (!folderPath) return;
+    const folder = this.app.vault.getAbstractFileByPath(folderPath);
+    if (folder instanceof TFolder) {
+      delete this.positions[id];
+      // Also drop any nested descendants from caches (folder.delete cascades on disk).
+      const prefix = folderPath + '/';
+      for (const [fp, eid] of [...this.idByFolderPath]) {
+        if (fp === folderPath || fp.startsWith(prefix)) {
+          delete this.positions[eid];
+          this.idByFolderPath.delete(fp);
+          this.folderPathById.delete(eid);
         }
-        // trashFile honors the user's "Files & Links → Deleted files" preference
-        // (system trash / .trash / permanent). Vault.delete bypasses that.
-        await this.app.fileManager.trashFile(folder);
-        return;
       }
+      await this.app.fileManager.trashFile(folder);
     }
-    // leaf — sibling sidecar 도 명시 삭제 (rename 이벤트가 사이드카 안 따라가게).
-    const f = this.app.vault.getAbstractFileByPath(path);
-    if (!(f instanceof TFile)) return;
-    delete this.positions[path];
-    await this.deleteSidecarForEntity(path);
-    await this.app.fileManager.trashFile(f);
   }
 
-  /** entity 의 본체 md 와 (expanded 면) 폴더를 같이 rename. */
-  async renameEntity(oldPath: string, newName: string): Promise<string | null> {
+  async renameEntity(id: EntityId, newName: string): Promise<EntityId | null> {
+    const folderPath = this.folderPathById.get(id);
+    if (!folderPath) return null;
     const safe = sanitizeFileName(newName);
     if (!safe) return null;
-    const info = entityInfo(oldPath);
-    if (!info) return null;
-    const oldBase = basenameFromPath(oldPath);
-    if (oldBase === safe) return oldPath;
-
-    if (info.expanded) {
-      // 폴더 먼저 rename — 자식들 path 자동 갱신 (rename 이벤트가 자식별 emit)
-      const folder = this.app.vault.getAbstractFileByPath(info.folderPath);
-      if (folder instanceof TFolder) {
-        const parentDir = info.folderPath.split('/').slice(0, -1).join('/');
-        const newFolderPath = parentDir ? `${parentDir}/${safe}` : safe;
-        await this.app.fileManager.renameFile(folder, normalizePath(newFolderPath));
-        // 폴더 rename 후 동명 md 도 함께 — Obsidian 이 폴더 안 자식까지 path 갱신했으니
-        // 본체 md 의 새 path = newFolderPath/oldBase.md
-        const movedMdPath = `${newFolderPath}/${oldBase}.md`;
-        const movedMd = this.app.vault.getAbstractFileByPath(movedMdPath);
-        if (movedMd instanceof TFile) {
-          await this.app.fileManager.renameFile(movedMd, normalizePath(`${newFolderPath}/${safe}.md`));
-        }
-        return `${newFolderPath}/${safe}.md`;
-      }
-    }
-
-    // leaf — md rename + sidecar (.<base>.position) 도 같이 rename
-    const f = this.app.vault.getAbstractFileByPath(oldPath);
-    if (!(f instanceof TFile)) return null;
-    const parentDir = oldPath.split('/').slice(0, -1).join('/');
-    const newPath = normalizePath(`${parentDir}/${safe}.md`);
-    await this.app.fileManager.renameFile(f, newPath);
-    // sibling sidecar rename
-    try {
-      const oldSidecar = `${parentDir}/.${oldBase}.position`;
-      const newSidecar = `${parentDir}/.${safe}.position`;
-      const sf = this.app.vault.getAbstractFileByPath(oldSidecar);
-      if (sf instanceof TFile) {
-        await this.app.fileManager.renameFile(sf, normalizePath(newSidecar));
-      }
-    } catch { /* best-effort cleanup, ignore */ }
-    return newPath;
+    const parent = parentFolderPath(folderPath);
+    const newFolderPath = parent ? `${parent}/${safe}` : safe;
+    if (newFolderPath === folderPath) return id;
+    const folder = this.app.vault.getAbstractFileByPath(folderPath);
+    if (!(folder instanceof TFolder)) return null;
+    await this.app.fileManager.renameFile(folder, normalizePath(newFolderPath));
+    // Caches update via the rename event listener; id stays the same.
+    return id;
   }
 
-  async addComponentTask(fromPath: string, toPath: string): Promise<void> {
-    if (fromPath === toPath) return;
-    const f = this.app.vault.getAbstractFileByPath(fromPath);
+  async updateModuleTags(id: EntityId, tags: string[]): Promise<void> {
+    const folderPath = this.folderPathById.get(id);
+    if (!folderPath) return;
+    const f = this.app.vault.getAbstractFileByPath(indexPathFromFolder(folderPath));
+    if (!(f instanceof TFile)) return;
+    await this.app.fileManager.processFrontMatter(f, (fm: Record<string, unknown>) => {
+      fm['modular-tags'] = tags;
+    });
+  }
+
+  async addComponentTask(fromId: EntityId, toId: EntityId): Promise<void> {
+    if (fromId === toId) return;
+    const folderPath = this.folderPathById.get(fromId);
+    if (!folderPath) return;
+    const f = this.app.vault.getAbstractFileByPath(indexPathFromFolder(folderPath));
     if (!(f instanceof TFile)) return;
     const fm = this.app.metadataCache.getFileCache(f)?.frontmatter;
     const tasks: unknown = fm?.['modular-tasks'];
     const existing = Array.isArray(tasks)
       ? (tasks as unknown[]).filter((s): s is string => typeof s === 'string')
       : [];
-    if (existing.includes(toPath)) return;
-    await setOutgoingTasks(this.app, f, [...existing, toPath]);
+    if (existing.includes(toId)) return;
+    await setOutgoingTasks(this.app, f, [...existing, toId]);
   }
 
-  async removeComponentTask(fromPath: string, toPath: string): Promise<void> {
-    const f = this.app.vault.getAbstractFileByPath(fromPath);
+  async removeComponentTask(fromId: EntityId, toId: EntityId): Promise<void> {
+    const folderPath = this.folderPathById.get(fromId);
+    if (!folderPath) return;
+    const f = this.app.vault.getAbstractFileByPath(indexPathFromFolder(folderPath));
     if (!(f instanceof TFile)) return;
     const fm = this.app.metadataCache.getFileCache(f)?.frontmatter;
     const tasks: unknown = fm?.['modular-tasks'];
     const existing = Array.isArray(tasks)
       ? (tasks as unknown[]).filter((s): s is string => typeof s === 'string')
       : [];
-    const next = existing.filter((p) => p !== toPath);
+    const next = existing.filter((p) => p !== toId);
     if (next.length === existing.length) return;
     await setOutgoingTasks(this.app, f, next);
   }
 
-  /** 마지막에 쓴 sideLeaf 가 살아 있으면 파일만 교체. 죽었으면 새 split.
-   *  - pinned: 외부 (explorer, link click, quick switcher) navigation 이 이 leaf 를 target 으로 잡지 않음.
-   *    modular sideLeaf 가 vault 전체의 file open 잡이가 되는 부작용 방지.
-   *  - active: false: focus 가 sideLeaf 로 안 옮김. canvas 가 active 유지되어
-   *    Tab/Delete/Esc 같은 단축이 그대로 작동. */
-  async openInSideLeaf(path: string): Promise<void> {
-    const f = this.app.vault.getAbstractFileByPath(path);
+  // ── side-leaf navigation ────────────────────────────────────────────────
+
+  async openInSideLeaf(id: EntityId): Promise<void> {
+    const folderPath = this.folderPathById.get(id);
+    if (!folderPath) return;
+    const f = this.app.vault.getAbstractFileByPath(indexPathFromFolder(folderPath));
     if (!(f instanceof TFile)) return;
     const ws = this.app.workspace;
-    // Mobile has no vertical split — fall back to a tab on top of the
-    // current canvas. The "side" metaphor doesn't apply on small screens;
-    // the user swipes back to the canvas like any other tab.
     if (Platform.isMobile) {
       const tab = ws.getLeaf('tab');
       await tab.openFile(f);
       return;
     }
     const leaf = this.sideLeaf;
-    // G7: liveness via iterateAllLeaves (covers ANY current view type — pdf,
-    // image, canvas, search, etc.). The earlier markdown/empty check
-    // misidentified a still-open leaf as dead whenever the user switched it
-    // to a non-markdown view, producing a duplicate split.
     const alive = leaf ? isLeafAttached(ws, leaf) : false;
     let target = leaf;
     if (!target || !alive) {
@@ -587,9 +407,10 @@ export class VaultStore {
     await target.openFile(f, { active: false });
   }
 
-  /** ⌘+Enter — 데스크탑에서 새 split, 모바일에선 새 tab. */
-  async openInNewSplit(path: string): Promise<void> {
-    const f = this.app.vault.getAbstractFileByPath(path);
+  async openInNewSplit(id: EntityId): Promise<void> {
+    const folderPath = this.folderPathById.get(id);
+    if (!folderPath) return;
+    const f = this.app.vault.getAbstractFileByPath(indexPathFromFolder(folderPath));
     if (!(f instanceof TFile)) return;
     const leaf = Platform.isMobile
       ? this.app.workspace.getLeaf('tab')
@@ -597,64 +418,67 @@ export class VaultStore {
     await leaf.openFile(f);
   }
 
-  /** 우클릭 메뉴. callback 으로 plugin 측 동작 받음. */
-  showNodeMenu(
+  // ── context menu ────────────────────────────────────────────────────────
+
+  openContextMenu(
+    id: EntityId,
     event: MouseEvent,
-    path: string,
     callbacks: {
-      onRename?: (path: string) => void;
-      onAddChild?: (path: string) => void;
-      onDelete?: (path: string) => void;
+      onAddChild?: (parentId: EntityId) => void;
+      onRename?: (id: EntityId) => void;
+      onDelete?: (id: EntityId) => void;
     },
   ): void {
-    const info = entityInfo(path);
-    if (!info) return;
+    void nameFromFolderPath; // imported for re-export consumers; no-op here.
     const menu = new Menu();
-
-    menu.addItem((item) => item
-      .setTitle('파일 열기 (side)')
-      .setIcon('file-text')
-      .onClick(() => { void this.openInSideLeaf(path); }));
-
-    menu.addItem((item) => item
-      .setTitle('새 split 에서 열기')
-      .setIcon('panel-right')
-      .onClick(() => { void this.openInNewSplit(path); }));
-
-    menu.addSeparator();
 
     if (callbacks.onAddChild) {
       menu.addItem((item) => item
-        .setTitle('자식 컴포넌트 추가')
+        .setTitle('자식 추가')
         .setIcon('plus')
-        .onClick(() => callbacks.onAddChild!(path)));
+        .onClick(() => callbacks.onAddChild!(id)));
     }
     if (callbacks.onRename) {
       menu.addItem((item) => item
         .setTitle('이름 변경')
         .setIcon('pencil')
-        .onClick(() => callbacks.onRename!(path)));
+        .onClick(() => callbacks.onRename!(id)));
     }
 
     menu.addSeparator();
 
     if (callbacks.onDelete) {
       menu.addItem((item) => item
-        .setTitle(info.expanded ? '삭제 (폴더 통째)' : '삭제')
+        .setTitle('삭제 (폴더 통째)')
         .setIcon('trash')
-        .onClick(() => callbacks.onDelete!(path)));
+        .onClick(() => callbacks.onDelete!(id)));
     }
 
     menu.showAtMouseEvent(event);
   }
 }
 
-/**
- * True iff `leaf` is still attached anywhere in the workspace tree.
- * iterateAllLeaves visits every open leaf regardless of view type, so a
- * sideLeaf the user retyped (markdown → pdf, etc.) is still recognized.
- */
-function isLeafAttached(ws: { iterateAllLeaves: (cb: (l: WorkspaceLeaf) => void) => void }, leaf: WorkspaceLeaf): boolean {
+async function readPositionFile(
+  adapter: { read: (p: string) => Promise<string> },
+  path: string,
+): Promise<{ x: number; y: number } | null> {
+  try {
+    const raw = await adapter.read(path);
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    const x = Number((parsed as { x?: unknown }).x);
+    const y = Number((parsed as { y?: unknown }).y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return { x, y };
+  } catch {
+    return null;
+  }
+}
+
+function isLeafAttached(
+  ws: { iterateAllLeaves: (cb: (l: WorkspaceLeaf) => void) => void },
+  leaf: WorkspaceLeaf,
+): boolean {
   let found = false;
   ws.iterateAllLeaves((l) => { if (l === leaf) found = true; });
   return found;
