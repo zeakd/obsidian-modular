@@ -580,3 +580,17 @@
   flex: 1;
   min-width: 0;
 }
+
+/* ── PR-10: body edit modal ────────────────────────────────────────────── */
+.modular-body-edit .modular-body-edit-ta {
+  width: 100%;
+  min-height: 280px;
+  font-family: var(--font-monospace, monospace);
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 10px 12px;
+  resize: vertical;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+}
