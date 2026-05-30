@@ -53,6 +53,22 @@ export default class ModularPlugin extends Plugin {
         callback: () => { void this.openFindEntity(); },
       });
 
+      // PR-11: AI 본문 제안 (stub) — 현재 activeFile 이 modular _index.md 면
+      // body 에 placeholder 텍스트 append. 실제 LLM 통합은 외부 plugin /
+      // settings 로 inject 가능 (ai/suggest.setSuggester).
+      this.addCommand({
+        id: 'ai-suggest-body',
+        name: 'AI: suggest body for current entity',
+        checkCallback: (checking: boolean) => {
+          const file = this.app.workspace.getActiveFile();
+          const ok = !!file && file.path.endsWith('/_index.md');
+          if (!ok) return false;
+          if (checking) return true;
+          void this.runAiSuggestBody();
+          return true;
+        },
+      });
+
       await this.log.write('─── onload complete ───');
       new Notice('Modular loaded', 3000);
     } catch (err) {
@@ -83,6 +99,31 @@ export default class ModularPlugin extends Plugin {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       new Notice(`Debug log read failed: ${msg}`);
+    }
+  }
+
+  private async runAiSuggestBody(): Promise<void> {
+    if (!this.store) return;
+    const file = this.app.workspace.getActiveFile();
+    if (!file || !file.path.endsWith('/_index.md')) return;
+    const { getSuggester } = await import('./ai/suggest');
+    const folderPath = file.path.slice(0, -'/_index.md'.length);
+    const snap = this.store.getSnapshot();
+    const entity = [...snap.entities.values()].find((e) => e.folderPath === folderPath);
+    if (!entity) { new Notice('Modular: not a known entity'); return; }
+    const siblings = [...snap.entities.values()].filter(
+      (e) => e.parentId === entity.parentId && e.id !== entity.id,
+    );
+    const children = [...snap.entities.values()].filter((e) => e.parentId === entity.id);
+    try {
+      const suggested = await getSuggester().suggestBody({ entity, siblings, children });
+      const body = await this.app.vault.read(file);
+      const newBody = body.replace(/(\n+)?$/, '\n\n' + suggested + '\n');
+      await this.app.vault.modify(file, newBody);
+      new Notice('Modular: AI 본문 제안 추가됨');
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      new Notice(`Modular: AI suggest failed — ${msg}`);
     }
   }
 
