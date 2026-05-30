@@ -1,41 +1,50 @@
-// frontmatter ↔ entity 변환. type/parent 는 conventions.entityInfo() 가 결정.
+// frontmatter ↔ entity 변환. v2 (conventions E).
+// id / parent / tasks 가 모두 frontmatter source-of-truth.
 
 import type { App, FrontMatterCache, TFile } from 'obsidian';
-import type { Module, Component, ModularFrontmatter } from './types';
-import { basenameFromPath } from './conventions';
+import type { Entity, EntityId, ModularFrontmatter } from './types';
+import {
+  folderPathFromIndex,
+  kindFromFolderPath,
+  nameFromFolderPath,
+} from './conventions';
 
-export function moduleFromEntity(
-  path: string,
+/** _index.md frontmatter → Entity (position 은 별도 sidecar 에서). */
+export function entityFromIndex(
+  indexPath: string,
   fm: FrontMatterCache | undefined,
   posFallback?: { x: number; y: number },
-): Module {
+): Entity | null {
+  const folderPath = folderPathFromIndex(indexPath);
+  const id: unknown = fm?.['modular-id'];
+  if (typeof id !== 'string' || id.length === 0) return null;
+
+  const kind = kindFromFolderPath(folderPath);
+  const parentRaw: unknown = fm?.['modular-parent'];
+  const parentId = typeof parentRaw === 'string' && parentRaw.length > 0 ? parentRaw : null;
+  // module 은 parent 없어야 — 어긋나면 kind 우선 (frontmatter 오염 방어).
+  const finalParent = kind === 'module' ? null : parentId;
+
   const tagsRaw: unknown = fm?.['modular-tags'];
-  const tags = Array.isArray(tagsRaw) ? (tagsRaw as unknown[]).map(String) : [];
+  const tags = Array.isArray(tagsRaw) ? (tagsRaw as unknown[]).map(String) : undefined;
+
   return {
-    path,
-    name: basenameFromPath(path),
+    id,
+    path: indexPath,
+    folderPath,
+    name: nameFromFolderPath(folderPath),
     position: posFallback ?? { x: 0, y: 0 },
-    tags,
+    parentId: finalParent,
+    kind,
+    tags: kind === 'module' ? (tags ?? []) : undefined,
   };
 }
 
-export function componentFromEntity(
-  path: string,
-  parentPath: string,
-  _fm: FrontMatterCache | undefined,
-  posFallback?: { x: number; y: number },
-): Component {
-  return {
-    path,
-    name: basenameFromPath(path),
-    parentPath,
-    position: posFallback ?? { x: 0, y: 0 },
-  };
-}
-
-export function newModuleFileBody(): string {
+/** 새 module 의 _index.md body. */
+export function newModuleIndexBody(id: EntityId): string {
   return [
     '---',
+    `modular-id: ${id}`,
     'modular-tags: []',
     '---',
     '',
@@ -43,9 +52,12 @@ export function newModuleFileBody(): string {
   ].join('\n');
 }
 
-export function newComponentFileBody(): string {
+/** 새 component 의 _index.md body. */
+export function newComponentIndexBody(id: EntityId, parentId: EntityId): string {
   return [
     '---',
+    `modular-id: ${id}`,
+    `modular-parent: ${parentId}`,
     'modular-tasks: []',
     '---',
     '',
@@ -53,6 +65,7 @@ export function newComponentFileBody(): string {
   ].join('\n');
 }
 
+/** entity 의 frontmatter 패치 (in-place via app.fileManager.processFrontMatter). */
 export async function writeModularFrontmatter(
   app: App,
   file: TFile,
@@ -69,7 +82,7 @@ export async function writeModularFrontmatter(
 export async function setOutgoingTasks(
   app: App,
   file: TFile,
-  toPaths: string[],
+  toIds: EntityId[],
 ): Promise<void> {
-  await writeModularFrontmatter(app, file, { 'modular-tasks': toPaths });
+  await writeModularFrontmatter(app, file, { 'modular-tasks': toIds });
 }

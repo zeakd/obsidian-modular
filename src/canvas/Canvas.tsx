@@ -1,9 +1,9 @@
-// Canvas — vault-backed 마인드맵.
+// Canvas — vault-backed 마인드맵 (v2: id-based).
 // 새 entity 생성 흐름:
 //   1. 빈 캔버스 더블클릭 → in-memory pending 카드 (vault 호출 X)
 //   2. 사용자가 이름 입력 + Enter / blur → store.createModule(name, position)
 //   3. 이름이 비어 있거나 Esc → pending 사라짐, 파일 안 생김
-// 기존 entity 의 이름 편집 (노드 더블클릭) 은 vault.fileManager.renameFile.
+// 기존 entity 의 이름 편집 (노드 더블클릭) 은 vault.fileManager.renameFile (폴더 rename).
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
@@ -27,6 +27,7 @@ import {
 
 import { Notice } from 'obsidian';
 import type { VaultStore } from '../data/vault-store';
+import type { Entity, EntityId, Workspace } from '../data/types';
 import { ModuleNode, type ModuleNodeData } from '../diagram/ModuleNode';
 import { ComponentNode, type ComponentNodeData } from '../diagram/ComponentNode';
 import { FloatingEdge } from '../diagram/FloatingEdge';
@@ -43,26 +44,41 @@ const PENDING_ID = '__pending__';
 
 type Pending =
   | { kind: 'module'; position: { x: number; y: number } }
-  | { kind: 'component'; parentPath: string; position: { x: number; y: number } };
+  | { kind: 'component'; parentId: EntityId; position: { x: number; y: number } };
 
 interface CanvasProps {
   store: VaultStore;
 }
 
+function partitionEntities(w: Workspace): {
+  modules: Entity[];
+  components: Entity[];
+  byId: Map<EntityId, Entity>;
+} {
+  const modules: Entity[] = [];
+  const components: Entity[] = [];
+  for (const e of w.entities.values()) {
+    if (e.kind === 'module') modules.push(e);
+    else components.push(e);
+  }
+  return { modules, components, byId: w.entities };
+}
+
 function CanvasInner({ store }: CanvasProps) {
   const w = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
+  const { modules, components, byId } = useMemo(() => partitionEntities(w), [w]);
   const rf = useReactFlow();
   const rootRef = useRef<HTMLDivElement>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [editingId, setEditingId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<EntityId | null>(null);
+  const [editingId, setEditingId] = useState<EntityId | null>(null);
   const [pending, setPending] = useState<Pending | null>(null);
   const zoom = useStore((s: ReactFlowState) => s.transform[2]);
 
-  // 기존 entity 의 이름 commit → vault rename.
-  const onCommitRename = useCallback((path: string, next: string) => {
+  // 기존 entity 의 이름 commit → vault rename (폴더 rename).
+  const onCommitRename = useCallback((id: EntityId, next: string) => {
     const trimmed = next.trim();
     if (!trimmed) { setEditingId(null); return; }
-    void store.renameEntity(path, trimmed).then(() => setEditingId(null));
+    void store.renameEntity(id, trimmed).then(() => setEditingId(null));
   }, [store]);
   const onCancelRename = useCallback(() => setEditingId(null), []);
 
@@ -74,10 +90,10 @@ function CanvasInner({ store }: CanvasProps) {
     if (!trimmed) { setPending(null); return; }
     const promise = p.kind === 'module'
       ? store.createModule(trimmed, p.position)
-      : store.createChildComponent(p.parentPath, trimmed, p.position);
+      : store.createChildComponent(p.parentId, trimmed, p.position);
     promise
-      .then((path) => { setPending(null); setSelectedId(path); })
-      .catch((err) => {
+      .then((id) => { setPending(null); setSelectedId(id); })
+      .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
         new Notice(`Modular: cannot create — ${msg}`, 4000);
         // pending 유지 — 사용자가 다른 이름 시도 가능
@@ -85,13 +101,11 @@ function CanvasInner({ store }: CanvasProps) {
   }, [pending, store]);
   const onPendingCancel = useCallback(() => setPending(null), []);
 
-  // 선택된 entity 의 path (module 또는 component). Tab 시 이 entity 의 자식 component 추가.
-  const selectedEntityPath = useMemo(() => {
+  // 선택된 entity. Tab 시 이 entity 의 자식 component 추가.
+  const selectedEntityId = useMemo<EntityId | null>(() => {
     if (!selectedId || selectedId === PENDING_ID) return null;
-    if (w.modules.some((m) => m.path === selectedId)) return selectedId;
-    if (w.components.some((c) => c.path === selectedId)) return selectedId;
-    return null;
-  }, [selectedId, w.modules, w.components]);
+    return byId.has(selectedId) ? selectedId : null;
+  }, [selectedId, byId]);
 
   // 빈 캔버스 더블클릭 → pending module
   useEffect(() => {
@@ -114,15 +128,10 @@ function CanvasInner({ store }: CanvasProps) {
   }, [rf]);
 
   // Tab → 선택된 entity 의 자식 component pending
-  // H2: Tab handler reads latest snapshot + selection via refs so the listener
-  // is attached once. Earlier deps `[w.modules, w.components, pending,
-  // selectedEntityPath]` produced new array identities on every snapshot tick
-  // → effect re-ran → remove/add listener → an in-flight keydown could land
-  // in the gap and be dropped.
   const wRef = useRef(w);
   wRef.current = w;
-  const selectedEntityPathRef = useRef(selectedEntityPath);
-  selectedEntityPathRef.current = selectedEntityPath;
+  const selectedEntityIdRef = useRef(selectedEntityId);
+  selectedEntityIdRef.current = selectedEntityId;
   const pendingRef = useRef(pending);
   pendingRef.current = pending;
   useEffect(() => {
@@ -131,19 +140,17 @@ function CanvasInner({ store }: CanvasProps) {
       const inField = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
       if (inField) return;
       if (e.key !== 'Tab') return;
-      const path = selectedEntityPathRef.current;
-      if (!path) return;
+      const id = selectedEntityIdRef.current;
+      if (!id) return;
       if (pendingRef.current) return;
       e.preventDefault();
       const snap = wRef.current;
-      const parentModule = snap.modules.find((m) => m.path === path);
-      const parentComp = snap.components.find((c) => c.path === path);
-      const parent = parentModule ?? parentComp;
+      const parent = snap.entities.get(id);
       if (!parent) return;
-      const siblings = snap.components.filter((c) => c.parentPath === path);
+      const siblings = [...snap.entities.values()].filter((c) => c.parentId === id);
       const x = parent.position.x + MODULE_W_EST + COMPONENT_GAP_X;
       const y = parent.position.y + siblings.length * COMPONENT_GAP_Y;
-      setPending({ kind: 'component', parentPath: path, position: { x, y } });
+      setPending({ kind: 'component', parentId: id, position: { x, y } });
       setSelectedId(PENDING_ID);
     };
     activeDocument.addEventListener('keydown', onKey);
@@ -156,58 +163,52 @@ function CanvasInner({ store }: CanvasProps) {
   // snapshot + pending → rfNodes
   useEffect(() => {
     setRfNodes((current) => {
-      const byId = new Map(current.map((n) => [n.id, n]));
+      const prevById = new Map(current.map((n) => [n.id, n]));
       const next: Node[] = [];
       const componentsHidden = zoom < ZOOM_REVEAL;
-      // H1: only preserve the in-memory rfNodes position WHILE a drag is in
-      // flight (otherwise reactflow would yank the node back to snapshot
-      // mid-drag). Once drag completes, snapshot wins so external/programmatic
-      // position updates (peer sync, store.updateEntityPosition from elsewhere)
-      // are actually reflected on screen.
       const dragInFlight = dragRef.current !== null;
-      const draggingId = dragRef.current?.modulePath ?? null;
+      const draggingId = dragRef.current?.entityId ?? null;
       const draggingChildren = dragRef.current?.childIds ?? [];
       const isDragMember = (id: string) => id === draggingId || draggingChildren.includes(id);
 
-      for (const m of w.modules) {
-        const existing = byId.get(m.path);
+      for (const m of modules) {
+        const existing = prevById.get(m.id);
         const data: ModuleNodeData = {
           name: m.name,
-          tags: m.tags,
-          editing: m.path === editingId,
-          onCommitName: (v: string) => onCommitRename(m.path, v),
+          tags: m.tags ?? [],
+          editing: m.id === editingId,
+          onCommitName: (v: string) => onCommitRename(m.id, v),
           onCancelName: onCancelRename,
         };
         next.push({
-          id: m.path,
+          id: m.id,
           type: 'module',
-          position: (dragInFlight && existing && isDragMember(m.path)) ? existing.position : m.position,
+          position: (dragInFlight && existing && isDragMember(m.id)) ? existing.position : m.position,
           data,
-          draggable: m.path !== editingId,
-          selected: m.path === selectedId,
+          draggable: m.id !== editingId,
+          selected: m.id === selectedId,
         });
       }
 
-      for (const c of w.components) {
-        const existing = byId.get(c.path);
+      for (const c of components) {
+        const existing = prevById.get(c.id);
         const data: ComponentNodeData = {
           name: c.name,
-          editing: c.path === editingId,
-          onCommitName: (v: string) => onCommitRename(c.path, v),
+          editing: c.id === editingId,
+          onCommitName: (v: string) => onCommitRename(c.id, v),
           onCancelName: onCancelRename,
         };
         next.push({
-          id: c.path,
+          id: c.id,
           type: 'component',
-          position: (dragInFlight && existing && isDragMember(c.path)) ? existing.position : c.position,
+          position: (dragInFlight && existing && isDragMember(c.id)) ? existing.position : c.position,
           data,
-          draggable: c.path !== editingId,
-          selected: c.path === selectedId,
+          draggable: c.id !== editingId,
+          selected: c.id === selectedId,
           hidden: componentsHidden,
         });
       }
 
-      // pending ghost 노드
       if (pending) {
         if (pending.kind === 'module') {
           const data: ModuleNodeData = {
@@ -238,57 +239,50 @@ function CanvasInner({ store }: CanvasProps) {
       }
       return next;
     });
-  }, [w.modules, w.components, editingId, selectedId, zoom, pending, onCommitRename, onCancelRename, onPendingCommit, onPendingCancel]);
+  }, [modules, components, editingId, selectedId, zoom, pending, onCommitRename, onCancelRename, onPendingCommit, onPendingCancel]);
 
   // edges
   useEffect(() => {
     const componentsHidden = zoom < ZOOM_REVEAL;
     const out: Edge[] = [];
     if (!componentsHidden) {
-      // 부모 → 자식 own edge (재귀, 모든 entity 가 parent 가질 수 있음)
-      const allEntityPaths = new Set<string>([
-        ...w.modules.map((m) => m.path),
-        ...w.components.map((c) => c.path),
-      ]);
-      for (const c of w.components) {
-        if (!allEntityPaths.has(c.parentPath)) continue;
+      // parent → child own edge (모든 entity 가 parent 가질 수 있음)
+      for (const c of components) {
+        if (!c.parentId || !byId.has(c.parentId)) continue;
         out.push({
-          id: `own:${c.parentPath}:${c.path}`,
-          source: c.parentPath, target: c.path,
+          id: `own:${c.parentId}:${c.id}`,
+          source: c.parentId, target: c.id,
           type: 'floating',
           style: { stroke: 'rgba(0,0,0,0.16)', strokeWidth: 1, strokeDasharray: '3 3' },
           deletable: false, focusable: false,
         });
       }
-      for (const t of w.componentTasks) {
+      for (const t of w.tasks) {
         out.push({
-          id: t.id, source: t.fromPath, target: t.toPath,
+          id: `task:${t.fromId}→${t.toId}`,
+          source: t.fromId, target: t.toId,
           type: 'floating', reconnectable: true,
           style: { stroke: 'var(--m-task-edge)', strokeWidth: 1.3 },
-          label: t.label,
         });
       }
     } else {
       // 줌 아웃: component task 의 root module 추적 → module-module edge dedupe
-      const moduleSet = new Set(w.modules.map((m) => m.path));
-      const parentOf = new Map<string, string>();
-      for (const c of w.components) parentOf.set(c.path, c.parentPath);
-      const rootModuleOf = (path: string): string | null => {
-        let cur = path;
-        const guard = new Set<string>();
-        while (!moduleSet.has(cur)) {
+      const moduleSet = new Set(modules.map((m) => m.id));
+      const rootModuleOf = (id: EntityId): EntityId | null => {
+        let cur: EntityId | null = id;
+        const guard = new Set<EntityId>();
+        while (cur && !moduleSet.has(cur)) {
           if (guard.has(cur)) return null;
           guard.add(cur);
-          const p = parentOf.get(cur);
-          if (!p) return null;
-          cur = p;
+          const e = byId.get(cur);
+          cur = e?.parentId ?? null;
         }
         return cur;
       };
       const seen = new Set<string>();
-      for (const t of w.componentTasks) {
-        const a = rootModuleOf(t.fromPath);
-        const b = rootModuleOf(t.toPath);
+      for (const t of w.tasks) {
+        const a = rootModuleOf(t.fromId);
+        const b = rootModuleOf(t.toId);
         if (!a || !b || a === b) continue;
         const [src, dst] = a < b ? [a, b] : [b, a];
         const key = `${src}|${dst}`;
@@ -302,26 +296,22 @@ function CanvasInner({ store }: CanvasProps) {
       }
     }
     setRfEdges(out);
-  }, [w.modules, w.components, w.componentTasks, zoom]);
+  }, [modules, components, byId, w.tasks, zoom]);
 
-  // module drag — 자식 component 따라옴
-  const dragRef = useRef<{ modulePath: string; lastPos: { x: number; y: number }; childIds: string[] } | null>(null);
+  // entity drag — 자식 따라옴
+  const dragRef = useRef<{ entityId: EntityId; lastPos: { x: number; y: number }; childIds: EntityId[] } | null>(null);
 
   const onNodeDragStart = useCallback((_: unknown, node: Node) => {
-    // H5: defensive clear at start — a previous drag that ended via Esc /
-    // focus loss / abort never fires onNodeDragStop, leaving dragRef populated
-    // with stale childIds. Always reset before assigning.
     dragRef.current = null;
-    // 재귀로 모든 후손 collect — module 뿐 아니라 component drag 도 자식 따라옴
-    const collectDescendants = (rootPath: string): string[] => {
-      const out: string[] = [];
-      const stack = [rootPath];
+    const collectDescendants = (rootId: EntityId): EntityId[] => {
+      const out: EntityId[] = [];
+      const stack: EntityId[] = [rootId];
       while (stack.length > 0) {
         const cur = stack.pop()!;
-        for (const c of w.components) {
-          if (c.parentPath === cur) {
-            out.push(c.path);
-            stack.push(c.path);
+        for (const c of components) {
+          if (c.parentId === cur) {
+            out.push(c.id);
+            stack.push(c.id);
           }
         }
       }
@@ -329,12 +319,12 @@ function CanvasInner({ store }: CanvasProps) {
     };
     const childIds = collectDescendants(node.id);
     if (childIds.length === 0 && node.type !== 'module') return;
-    dragRef.current = { modulePath: node.id, lastPos: { x: node.position.x, y: node.position.y }, childIds };
-  }, [w.components]);
+    dragRef.current = { entityId: node.id, lastPos: { x: node.position.x, y: node.position.y }, childIds };
+  }, [components]);
 
   const onNodeDrag = useCallback((_: unknown, node: Node) => {
     const off = dragRef.current;
-    if (!off || off.modulePath !== node.id) return;
+    if (!off || off.entityId !== node.id) return;
     const dx = node.position.x - off.lastPos.x;
     const dy = node.position.y - off.lastPos.y;
     if (dx === 0 && dy === 0) return;
@@ -352,7 +342,7 @@ function CanvasInner({ store }: CanvasProps) {
     if (node.id === PENDING_ID) return;
     void store.updateEntityPosition(node.id, { x: node.position.x, y: node.position.y });
     const off = dragRef.current;
-    if (off && off.modulePath === node.id) {
+    if (off && off.entityId === node.id) {
       const childSet = new Set(off.childIds);
       const curr = rf.getNodes();
       for (const cn of curr) {
@@ -369,14 +359,11 @@ function CanvasInner({ store }: CanvasProps) {
     for (const ch of changes) {
       if (ch.type === 'remove') {
         if (ch.id === PENDING_ID) { setPending(null); continue; }
-        const node = rf.getNode(ch.id);
-        if (!node) continue;
-        if (node.type === 'module') void store.deleteEntity(ch.id);
-        else if (node.type === 'component') void store.deleteEntity(ch.id);
+        void store.deleteEntity(ch.id);
       }
       if (ch.type === 'select') { if (ch.selected) setSelectedId(ch.id); }
     }
-  }, [rf, store]);
+  }, [store]);
 
   const onEdgesChange = useCallback((changes: EdgeChange[]) => {
     setRfEdges((curr) => applyEdgeChanges(changes, curr));
@@ -408,57 +395,46 @@ function CanvasInner({ store }: CanvasProps) {
     setEditingId(node.id);
   }, []);
 
-  // 노드 클릭 = 선택 + side leaf 에서 그 md 자동 열기.
-  // sideLeaf 가 살아 있으면 같은 leaf 의 파일만 교체, 죽었으면 새 split.
-  // H3: openInSideLeaf is cheap (just retargets the existing leaf). The
-  // earlier "skip when same as last clicked" optimization gave wrong UX
-  // when the user manually switched the side leaf to a different file —
-  // clicking the same node again did nothing. Drop the gate entirely.
   const onNodeClick: NodeMouseHandler = useCallback((_, node) => {
     if (node.id === PENDING_ID) return;
     setSelectedId(node.id);
     void store.openInSideLeaf(node.id);
   }, [store]);
 
-  // 우클릭 컨텍스트 메뉴 — Obsidian Menu 사용. 메뉴 항목은 store 가 정의,
-  // plugin 측 동작 (이름 편집 / 자식 추가 / 삭제) 은 callback 으로.
   const onNodeContextMenu: NodeMouseHandler = useCallback((e, node) => {
     if (node.id === PENDING_ID) return;
     e.preventDefault();
     setSelectedId(node.id);
-    store.showNodeMenu(e as unknown as MouseEvent, node.id, {
-      onRename: (path) => setEditingId(path),
-      onAddChild: (path) => {
-        // 선택된 entity 의 자식 component pending — Tab 과 같은 동선
-        const parentModule = w.modules.find((m) => m.path === path);
-        const parentComp = w.components.find((c) => c.path === path);
-        const parent = parentModule ?? parentComp;
+    store.openContextMenu(node.id, e as unknown as MouseEvent, {
+      onRename: (id: EntityId) => setEditingId(id),
+      onAddChild: (id: EntityId) => {
+        const snap = wRef.current;
+        const parent = snap.entities.get(id);
         if (!parent) return;
-        const siblings = w.components.filter((c) => c.parentPath === path);
+        const siblings = [...snap.entities.values()].filter((c) => c.parentId === id);
         const x = parent.position.x + MODULE_W_EST + COMPONENT_GAP_X;
         const y = parent.position.y + siblings.length * COMPONENT_GAP_Y;
-        setPending({ kind: 'component', parentPath: path, position: { x, y } });
+        setPending({ kind: 'component', parentId: id, position: { x, y } });
         setSelectedId(PENDING_ID);
       },
-      onDelete: (path) => {
-        const hasChildren = w.components.some((c) => c.parentPath === path);
-        // TODO: replace with a proper Obsidian Modal for native theming.
+      onDelete: (id: EntityId) => {
+        const snap = wRef.current;
+        const hasChildren = [...snap.entities.values()].some((c) => c.parentId === id);
+        const target = snap.entities.get(id);
+        const label = target?.name ?? id;
         // eslint-disable-next-line no-alert -- intentional native confirm pending Modal port
-        if (hasChildren && !confirm(`'${path}' 와 모든 자식을 삭제할까요? (폴더 통째로 사라집니다)`)) return;
-        void store.deleteEntity(path);
-        if (selectedId === path) setSelectedId(null);
+        if (hasChildren && !confirm(`'${label}' 와 모든 자식을 삭제할까요? (폴더 통째로 사라집니다)`)) return;
+        void store.deleteEntity(id);
+        if (selectedIdRef.current === id) setSelectedId(null);
       },
     });
-  }, [store, w.modules, w.components, selectedId]);
+  }, [store]);
 
   const onPaneClick = useCallback(() => {
     setSelectedId(null);
   }, []);
 
   // delete + Esc + ⌘Enter
-  // H4: read selectedId via ref so the listener is attached once. The earlier
-  // `[selectedId, pending]` deps re-registered the handler on every selection
-  // change, which dropped any keydown that landed in the remove/add window.
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
   useEffect(() => {
@@ -471,10 +447,10 @@ function CanvasInner({ store }: CanvasProps) {
         const selE = rf.getEdges().filter((ed) => ed.selected && !ed.id.startsWith('own:') && !ed.id.startsWith('agg:'));
         const snap = wRef.current;
         for (const n of sel) {
-          // expanded entity (자식 있을 가능성) 는 한 번 더 확인 받음
-          const hasChildren = snap.components.some((c) => c.parentPath === n.id);
+          const hasChildren = [...snap.entities.values()].some((c) => c.parentId === n.id);
+          const label = snap.entities.get(n.id)?.name ?? n.id;
           // eslint-disable-next-line no-alert -- intentional native confirm pending Modal port
-          if (hasChildren && !confirm(`'${n.id}' 와 모든 자식을 삭제할까요? (폴더 통째로 사라집니다)`)) continue;
+          if (hasChildren && !confirm(`'${label}' 와 모든 자식을 삭제할까요? (폴더 통째로 사라집니다)`)) continue;
           void store.deleteEntity(n.id);
         }
         for (const ed of selE) {
@@ -491,8 +467,6 @@ function CanvasInner({ store }: CanvasProps) {
         setEditingId(null);
         setSelectedId(null);
       }
-      // ⌘+Enter — 선택된 노드의 md 를 *새 split* 에서 열기 (sideLeaf 재사용 X).
-      // 일반 클릭은 sideLeaf 재사용이라 빠른 전환, ⌘+Enter 는 비교용 별도 창.
       if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
         const sel = selectedIdRef.current;
         if (sel && sel !== PENDING_ID) {
@@ -556,13 +530,13 @@ function CanvasInner({ store }: CanvasProps) {
       </ReactFlow>
 
       <Status
-        moduleCount={w.modules.length}
-        componentCount={w.components.length}
+        moduleCount={modules.length}
+        componentCount={components.length}
         zoom={zoom}
-        canAddComponent={selectedEntityPath !== null && !pending}
+        canAddComponent={selectedEntityId !== null && !pending}
         canOpenInLeaf={selectedId !== null && selectedId !== PENDING_ID}
       />
-      {w.modules.length === 0 && !pending && <EmptyHint />}
+      {modules.length === 0 && !pending && <EmptyHint />}
     </div>
   );
 }
