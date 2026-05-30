@@ -176,31 +176,40 @@ export class VaultStore {
   /**
    * vault 측에서 _index.md 가 새로 생기면 frontmatter `modular-id` 가 빠져
    * 있을 수 있음. 자동으로 ULID 부여 + parent id 추정 (폴더 nesting).
+   *
+   * mc cache 의존 X — 새 파일은 cache 가 비어있을 수 있어 vault.read 로 직접
+   * 파싱 (idempotent). 우리 plugin 의 createModule 가 만든 _index.md 도
+   * 이 핸들러를 거치지만 이미 id 가 박혀 있으면 no-op.
    */
   private async ensureIdOnIndex(f: TFile): Promise<void> {
     try {
-      const fm = this.app.metadataCache.getFileCache(f)?.frontmatter;
-      const existingRaw: unknown = fm?.['modular-id'];
-      const existing = typeof existingRaw === 'string' ? existingRaw : null;
-      if (existing && existing.length > 0) return;
+      const body = await this.app.vault.read(f);
+      const fmText = body.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+      if (fmText && /^[ \t]*modular-id:[ \t]*[^\s]/m.test(fmText[1])) return;
+      // No id yet — assign one. Parent id from parent folder's _index.md
+      // (also read directly from disk to avoid cache misses on fresh files).
       const folderPath = folderPathFromIndex(f.path);
       const kind = (folderPath.split('/').length === 2) ? 'module' : 'component';
       const newEntityId = newId();
+      let parentIdToSet: string | null = null;
+      if (kind === 'component') {
+        const parentFolder = folderPath.slice(0, folderPath.lastIndexOf('/'));
+        const parentIndexFile = this.app.vault.getAbstractFileByPath(
+          `${parentFolder}/${INDEX_FILE}`,
+        );
+        if (parentIndexFile instanceof TFile) {
+          try {
+            const pBody = await this.app.vault.read(parentIndexFile);
+            const m = pBody.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+            const idLine = m?.[1].match(/^[ \t]*modular-id:[ \t]*([^\s]+)/m);
+            if (idLine) parentIdToSet = idLine[1];
+          } catch { /* parent unreadable — skip */ }
+        }
+      }
       await this.app.fileManager.processFrontMatter(f, (front: Record<string, unknown>) => {
         front['modular-id'] = newEntityId;
-        if (kind === 'component' && !front['modular-parent']) {
-          // 부모 폴더에 _index.md 가 있으면 그 id 를 parent 로.
-          const parentFolder = folderPath.slice(0, folderPath.lastIndexOf('/'));
-          const parentIndexFile = this.app.vault.getAbstractFileByPath(
-            `${parentFolder}/${INDEX_FILE}`,
-          );
-          if (parentIndexFile instanceof TFile) {
-            const parentFm = this.app.metadataCache.getFileCache(parentIndexFile)?.frontmatter;
-            const parentIdMaybe: unknown = parentFm?.['modular-id'];
-            if (typeof parentIdMaybe === 'string' && parentIdMaybe.length > 0) {
-              front['modular-parent'] = parentIdMaybe;
-            }
-          }
+        if (parentIdToSet && !front['modular-parent']) {
+          front['modular-parent'] = parentIdToSet;
         }
       });
     } catch (e) {
