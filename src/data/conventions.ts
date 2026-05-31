@@ -1,76 +1,61 @@
-// 파일 컨벤션 — v2 (conventions E, 2026-05).
+// 파일 컨벤션 — v3 (folder-agnostic, 2026).
 //
-// 모든 entity = 폴더 + `_index.md` (본체). leaf ↔ expanded 구분 폐지.
-// 본체 식별은 path 패턴이 아니라 frontmatter 의 `modular-id` (id.ts).
+// entity = frontmatter `modular-id` 를 가진 *아무* markdown 파일.
+// 폴더 위치/구조 완전 무관. 이름 = 파일 basename.
 //
-// 폴더 nesting 은 hierarchy 표시 + 사용자 직관을 위한 보조 표현일 뿐.
-// 실제 parent-child 관계는 frontmatter `modular-parent` 가 source of truth.
-// (마이그 단계에서 폴더 nesting 과 parent id 가 일치하도록 보장.)
+// 관계는 frontmatter 의 네이티브 wikilink 로:
+//   modular-parent: "[[Payments]]"      → 부모 (없으면 module, 있으면 component)
+//   modular-tasks: ["[[Paywall]]", ...]  → task 의존 edge
+//   tags: [...]                          → 네이티브 태그 (modular 전용 아님)
 //
-// 규약:
-//   modular/X/_index.md           → entity (X 라는 이름의 entity 본체)
-//   modular/X/Y/_index.md         → entity (X 폴더 안에 nested 된 자식 entity)
-//   modular/X/Y/.position         → 위치 sidecar
-//   modular/A.md, modular/A/B.md  → 무시 (entity 아님)
-//   modular/.../.ai/...           → 무시 (AI 영역)
-//   modular/.migration-v2         → 마이그 완료 마커
-//   modular/.../.position         → entity 위치 sidecar (모든 entity 단일 패턴)
+// modular 고유 저장은 두 가지뿐:
+//   - modular-id (frontmatter): 안정 anchor — 동명 노트 구분 + sync 견고성
+//   - <dir>/.<basename>.position (sidecar): 캔버스 좌표 (git/sync 깨끗하게 분리)
+//
+// 새 entity 는 기본적으로 modular/ 루트에 평평하게 생성하되, 기존 entity 는
+// vault 어디 있든 인식.
 
-export const MODULAR_FOLDER = 'modular';
-export const AI_FOLDER = '.ai';
-export const INDEX_FILE = '_index.md';
-export const POSITION_FILE = '.position';
-export const MIGRATION_MARKER = 'modular/.migration-v2';
+export const MODULAR_FOLDER = 'modular';   // 새 entity 기본 생성 위치
+export const AI_FOLDER = '.ai';            // 무시 영역
+export const POSITION_SUFFIX = '.position';
 
-/** 본체 _index.md 인지 (modular 영역 + AI 제외). */
-export function isEntityIndexPath(path: string): boolean {
-  if (!path.startsWith(`${MODULAR_FOLDER}/`)) return false;
+/** markdown 파일이고 AI 영역이 아닌가 (entity 후보). 실제 entity 여부는
+ *  frontmatter modular-id 유무로 vault-store 가 판정. */
+export function isEntityCandidate(path: string): boolean {
+  if (!path.endsWith('.md')) return false;
+  if (path.includes(`/${AI_FOLDER}/`) || path.startsWith(`${AI_FOLDER}/`)) return false;
+  return true;
+}
+
+/** 파일 path → 표시 이름 (basename, 확장자 제외). */
+export function nameFromPath(path: string): string {
+  const base = path.split('/').pop() ?? path;
+  return base.replace(/\.md$/i, '');
+}
+
+/** 파일 path → 좌표 sidecar path (`<dir>/.<basename>.position`). */
+export function positionSidecarPath(filePath: string): string {
+  const slash = filePath.lastIndexOf('/');
+  const dir = slash < 0 ? '' : filePath.slice(0, slash);
+  const base = (slash < 0 ? filePath : filePath.slice(slash + 1)).replace(/\.md$/i, '');
+  return dir ? `${dir}/.${base}${POSITION_SUFFIX}` : `.${base}${POSITION_SUFFIX}`;
+}
+
+/** 좌표 sidecar path 인가. */
+export function isPositionSidecar(path: string): boolean {
   if (path.includes(`/${AI_FOLDER}/`)) return false;
-  return path.endsWith(`/${INDEX_FILE}`);
+  const base = path.split('/').pop() ?? path;
+  return base.startsWith('.') && base.endsWith(POSITION_SUFFIX);
 }
 
-/** 좌표 sidecar 인지. */
-export function isPositionSidecarPath(path: string): boolean {
-  if (!path.startsWith(`${MODULAR_FOLDER}/`)) return false;
-  if (path.includes(`/${AI_FOLDER}/`)) return false;
-  return path.endsWith(`/${POSITION_FILE}`);
-}
-
-/** entity index path → 그 entity 의 폴더 path. */
-export function folderPathFromIndex(indexPath: string): string {
-  return indexPath.slice(0, -`/${INDEX_FILE}`.length);
-}
-
-/** folder path → 그 안의 _index.md path. */
-export function indexPathFromFolder(folderPath: string): string {
-  return `${folderPath}/${INDEX_FILE}`;
-}
-
-/** folder path → 그 안의 .position path. */
-export function positionSidecarPath(folderPath: string): string {
-  return `${folderPath}/${POSITION_FILE}`;
-}
-
-/** position sidecar path → 그 entity 의 폴더 path. */
-export function folderPathFromSidecar(sidecarPath: string): string {
-  return sidecarPath.slice(0, -`/${POSITION_FILE}`.length);
-}
-
-/** 폴더 path → 표시 이름 (마지막 segment). */
-export function nameFromFolderPath(folderPath: string): string {
-  const i = folderPath.lastIndexOf('/');
-  return i < 0 ? folderPath : folderPath.slice(i + 1);
-}
-
-/** 폴더 path → 부모 폴더 path. modular/X 는 modular (root 위라 entity 없음). */
-export function parentFolderPath(folderPath: string): string {
-  const i = folderPath.lastIndexOf('/');
-  return i < 0 ? '' : folderPath.slice(0, i);
-}
-
-/** 부모 폴더 path 가 modular 루트면 그 entity 는 module. 아니면 component. */
-export function kindFromFolderPath(folderPath: string): 'module' | 'component' {
-  return parentFolderPath(folderPath) === MODULAR_FOLDER ? 'module' : 'component';
+/** sidecar path → 그 entity 의 .md path 역추론. */
+export function entityPathFromSidecar(sidecarPath: string): string {
+  const slash = sidecarPath.lastIndexOf('/');
+  const dir = slash < 0 ? '' : sidecarPath.slice(0, slash);
+  const base = (slash < 0 ? sidecarPath : sidecarPath.slice(slash + 1))
+    .replace(/^\./, '')
+    .replace(new RegExp(`${POSITION_SUFFIX}$`), '');
+  return dir ? `${dir}/${base}.md` : `${base}.md`;
 }
 
 export function sanitizeFileName(raw: string): string | null {
@@ -78,18 +63,9 @@ export function sanitizeFileName(raw: string): string | null {
   return cleaned || null;
 }
 
-/** 새 module 의 폴더 + index path. */
-export function newModulePaths(name: string): { folder: string; index: string } | null {
+/** 새 entity 의 .md path (기본 modular/ 루트, 평평). */
+export function newEntityPath(name: string): string | null {
   const safe = sanitizeFileName(name);
   if (!safe) return null;
-  const folder = `${MODULAR_FOLDER}/${safe}`;
-  return { folder, index: indexPathFromFolder(folder) };
-}
-
-/** 자식 entity 의 폴더 + index path (parent folder 안에). */
-export function newChildEntityPaths(parentFolderPath: string, name: string): { folder: string; index: string } | null {
-  const safe = sanitizeFileName(name);
-  if (!safe) return null;
-  const folder = `${parentFolderPath}/${safe}`;
-  return { folder, index: indexPathFromFolder(folder) };
+  return `${MODULAR_FOLDER}/${safe}.md`;
 }

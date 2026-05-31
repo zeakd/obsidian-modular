@@ -458,7 +458,7 @@ function CanvasInner({ store }: CanvasProps) {
     store.openContextMenu(node.id, e as unknown as MouseEvent, {
       onRename: (id: EntityId) => setEditingId(id),
       onEditBody: (id: EntityId) => {
-        const f = store.getEntityIndexFile(id);
+        const f = store.entityFile(id);
         if (!f) return;
         const snap = wRef.current;
         const ent = snap.entities.get(id);
