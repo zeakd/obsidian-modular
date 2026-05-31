@@ -53,7 +53,7 @@ export default class ModularPlugin extends Plugin {
         callback: () => { void this.openFindEntity(); },
       });
 
-      // PR-11: AI 본문 제안 (stub) — 현재 activeFile 이 modular _index.md 면
+      // PR-11: AI 본문 제안 (stub) — 현재 activeFile 이 modular entity 면
       // body 에 placeholder 텍스트 append. 실제 LLM 통합은 외부 plugin /
       // settings 로 inject 가능 (ai/suggest.setSuggester).
       this.addCommand({
@@ -61,8 +61,10 @@ export default class ModularPlugin extends Plugin {
         name: 'AI: suggest body for current entity',
         checkCallback: (checking: boolean) => {
           const file = this.app.workspace.getActiveFile();
-          const ok = !!file && file.path.endsWith('/_index.md');
-          if (!ok) return false;
+          if (!file || !this.store) return false;
+          const isEntity = [...this.store.getSnapshot().entities.values()]
+            .some((e) => e.path === file.path);
+          if (!isEntity) return false;
           if (checking) return true;
           void this.runAiSuggestBody();
           return true;
@@ -105,11 +107,10 @@ export default class ModularPlugin extends Plugin {
   private async runAiSuggestBody(): Promise<void> {
     if (!this.store) return;
     const file = this.app.workspace.getActiveFile();
-    if (!file || !file.path.endsWith('/_index.md')) return;
+    if (!file) return;
     const { getSuggester } = await import('./ai/suggest');
-    const folderPath = file.path.slice(0, -'/_index.md'.length);
     const snap = this.store.getSnapshot();
-    const entity = [...snap.entities.values()].find((e) => e.folderPath === folderPath);
+    const entity = [...snap.entities.values()].find((e) => e.path === file.path);
     if (!entity) { new Notice('Modular: not a known entity'); return; }
     const siblings = [...snap.entities.values()].filter(
       (e) => e.parentId === entity.parentId && e.id !== entity.id,
@@ -176,7 +177,7 @@ class FindEntityModal extends SuggestModal<Entity> {
   renderSuggestion(e: Entity, el: HTMLElement): void {
     el.createDiv({ text: e.name, cls: 'modular-suggest-name' });
     const sub = el.createDiv({ cls: 'modular-suggest-sub' });
-    sub.setText(`${e.kind === 'module' ? '◇' : '·'} ${e.folderPath}`);
+    sub.setText(`${e.kind === 'module' ? '◇' : '·'} ${e.path}`);
   }
   onChooseSuggestion(e: Entity): void {
     void this.onPick(e.id);
