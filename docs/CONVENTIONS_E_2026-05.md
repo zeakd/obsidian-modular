@@ -1,3 +1,8 @@
+> **SUPERSEDED (2026) — see v3 (folder-agnostic).** `_index.md` + 폴더 계층은
+> 폐기됨. v3에서 entity = `modular-id` 가진 아무 .md (폴더 무관), 이름 = 파일
+> basename, 관계 = 네이티브 wikilink(`modular-parent`/`modular-tasks`), tags =
+> 네이티브. 이 문서는 설계 변천 기록용으로만 보존. (구현: PR #28)
+
 # Conventions E — `_index.md` + folder + frontmatter `modular-id`
 
 목표: rename invariance, 외부 편집 안전성, 본체 식별 명확화.
